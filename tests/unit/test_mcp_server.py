@@ -23,6 +23,8 @@ EXPECTED_TOOL_ORDER = [
     "school_knowledge",
     "school_lifecycle",
     "school_diagnose",
+    "school_route",
+    "school_route_stats",
 ]
 
 
@@ -443,6 +445,7 @@ class TestRoutingGuidance:
             "school_confidence",
             "school_conflict",
             "school_diagnose",
+            "school_route_stats",
         }
         for name in read_only:
             assert tools[name].annotations.idempotent_hint is True, name
@@ -461,3 +464,84 @@ class TestRoutingGuidance:
             assert match, f"no TS description block for {name}"
             ts_desc = "".join(re.findall(r'"([^"]*)"', match.group(1)))
             assert ts_desc == spec["description"], name
+
+
+class TestRouteToolsMCP:
+    def test_tools_present_with_use_guidance(self):
+        from school.mcp.server import _TOOLS
+        for name in ("school_route", "school_route_stats"):
+            assert name in _TOOLS
+            assert "Use" in _TOOLS[name]["description"]
+            assert "coding" in _TOOLS[name]["description"]
+
+    def test_route_schema(self):
+        from school.mcp.server import _TOOLS
+        props = _TOOLS["school_route"]["schema"]["properties"]
+        assert props["mode"]["enum"] == ["assess", "report"]
+        assert props["severity"]["enum"] == ["light", "medium", "high"]
+        assert "situation" in _TOOLS["school_route"]["schema"]["required"]
+
+    def test_stats_annotations(self):
+        from school.mcp.server import _TOOLS
+        ann = _TOOLS["school_route_stats"]["annotations"]
+        assert ann["read_only_hint"] is True
+
+    def test_engage_mapping_parity(self):
+        from school.mcp.server import _engage_for
+        assert _engage_for("light") == "skill"
+        assert _engage_for("medium") == "both"
+        assert _engage_for("high") == "both"
+
+    def test_assess_requires_severity_and_writes_evidence(self, tmp_path):
+        from school.mcp.server import _call_tool
+        wt = str(tmp_path)
+        with pytest.raises(ValueError) as exc:
+            _call_tool(wt, "school_route",
+                       {"mode": "assess", "situation": "planning a trip"})
+        assert "severity" in str(exc.value).lower()
+        res = _call_tool(wt, "school_route",
+                         {"mode": "assess", "situation": "planning a trip",
+                          "severity": "light"})
+        assert res.is_error is False
+        data = res.structured_content
+        assert data["source"] == "self-rated"
+        assert data["engage"] == "skill"
+        ev = tmp_path / ".school" / "routing-stats.jsonl"
+        assert ev.exists()
+        assert "assess" in ev.read_text(encoding="utf-8")
+
+    def test_report_stores_tagged_lesson(self, tmp_path, monkeypatch):
+        from school.mcp.server import _call_tool
+        res = _call_tool(str(tmp_path), "school_route",
+                         {"mode": "report", "situation": "debugging session",
+                          "lesson": "recall first, search second",
+                          "outcome": "helpful"})
+        assert res.is_error is False
+        assert res.structured_content["ok"] is True
+        # Lesson is retrievable through the normal recall path.
+        res2 = _call_tool(str(tmp_path), "school_recall",
+                          {"query": "routing lesson"})
+        assert res2.is_error is False
+        found = " ".join(
+            str(m.get("content", ""))
+            for m in res2.structured_content.get("memories", [])
+        )
+        assert "recall first" in found
+
+    def test_stats_aggregates(self, tmp_path):
+        from school.mcp.server import _call_tool
+        _call_tool(str(tmp_path), "school_route",
+                   {"mode": "assess", "situation": "x", "severity": "high"})
+        res = _call_tool(str(tmp_path), "school_route_stats", {"limit": 5})
+        assert res.is_error is False
+        data = res.structured_content
+        assert data["last_activity"]
+        assert any(e.get("kind") == "assess" for e in data["recent"])
+        assert "knobs" in data
+
+    def test_default_assess_without_severity_fails(self, tmp_path):
+        # MCP has no model client: severity is mandatory.
+        from school.mcp.server import _call_tool
+        with pytest.raises(ValueError):
+            _call_tool(str(tmp_path), "school_route",
+                       {"mode": "assess", "situation": "x"})

@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
@@ -328,6 +329,69 @@ _TOOLS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "school_route": {
+        "description": (
+            "Assess how much School routing machinery a situation needs "
+            "(mode assess: tiny real model call -> engage skill or both) or "
+            "store a routing lesson (mode report: what worked where, tagged "
+            "and retrievable). Use when starting non-trivial work or after a "
+            "tool call taught you something about routing - for anything, "
+            "not only coding."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "mode": {
+                    "type": "string",
+                    "enum": ["assess", "report"],
+                    "description": "assess = routing decision; report = store a lesson.",
+                },
+                "situation": {
+                    "type": "string",
+                    "description": "What is happening (max 500 chars).",
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["light", "medium", "high"],
+                    "description": (
+                        "Required for assess: self-rated urgency "
+                        "(no model client on MCP)."
+                    ),
+                },
+                "lesson": {
+                    "type": "string",
+                    "description": "report: the routing lesson to store.",
+                },
+                "outcome": {
+                    "type": "string",
+                    "enum": ["helpful", "useless", "neutral"],
+                    "description": "report: how the routing worked out.",
+                },
+            },
+            "required": ["mode", "situation"],
+        },
+    },
+    "school_route_stats": {
+        "description": (
+            "Aggregated routing evidence: per-tool call counts and average "
+            "durations, recent assess/report entries, current knobs, and "
+            "recent routing lessons. Use before adjusting how School "
+            "routes, or when the routing skill asks for current numbers - "
+            "for anything, not only coding."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 100,
+                    "description": "Recent entries/lessons to include (default 20).",
+                }
+            },
+        },
+    },
 }
 
 
@@ -377,6 +441,108 @@ def _build_request(worktree: str, tool: str, args: dict[str, Any]) -> dict[str, 
             req["session"] = session
 
     return req
+
+
+_ROUTE_STATS_FILE = "routing-stats.jsonl"
+_ROUTE_KNOBS_FILE = "routing.json"
+_ROUTE_MAX_LINES = 2000
+
+_DEFAULT_KNOBS: dict[str, Any] = {
+    "recall_threshold": 0.2,
+    "hook_limit": 3,
+    "hook_budget": 400,
+    "hook_timeout_ms": 1500,
+    "skip_tools": [],
+    "force_tools": [],
+}
+
+
+def _engage_for(severity: str) -> str:
+    """Parity with the plugin's engageFor()."""
+    return "skill" if severity == "light" else "both"
+
+
+def _memory_root(worktree: str) -> Path:
+    for sub in (".school", ".lerev", ".evo"):
+        root = Path(worktree) / sub
+        if (root / "memory").is_dir():
+            return root
+    return Path(worktree) / ".school"
+
+
+def _append_evidence(worktree: str, entry: dict[str, Any]) -> None:
+    """Append one JSONL evidence line; silent on failure (spec: never breaks)."""
+    try:
+        root = _memory_root(worktree)
+        root.mkdir(parents=True, exist_ok=True)
+        path = root / _ROUTE_STATS_FILE
+        if path.exists():
+            lines = [
+                line
+                for line in path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            if len(lines) >= _ROUTE_MAX_LINES * 2:
+                path.write_text(
+                    "\n".join(lines[-_ROUTE_MAX_LINES:]) + "\n", encoding="utf-8"
+                )
+        payload = {"ts": datetime.now(UTC).isoformat(), **entry}
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:  # noqa: BLE001 - evidence is best-effort
+        pass
+
+
+def _read_knobs(worktree: str) -> dict[str, Any]:
+    try:
+        raw = json.loads((_memory_root(worktree) / _ROUTE_KNOBS_FILE).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 - invalid knobs fall back per spec
+        return dict(_DEFAULT_KNOBS)
+    knobs = dict(_DEFAULT_KNOBS)
+    if isinstance(raw, dict):
+        for key in ("recall_threshold", "hook_limit", "hook_budget", "hook_timeout_ms"):
+            if isinstance(raw.get(key), (int, float)):
+                knobs[key] = raw[key]
+        for key in ("skip_tools", "force_tools"):
+            if isinstance(raw.get(key), list):
+                knobs[key] = [str(v) for v in raw[key]]
+    return knobs
+
+
+def _read_stats(worktree: str, limit: int) -> dict[str, Any]:
+    path = _memory_root(worktree) / _ROUTE_STATS_FILE
+    entries: list[dict[str, Any]] = []
+    if path.exists():
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    entries.append(json.loads(line))
+        except Exception:  # noqa: BLE001 - corrupt lines are skipped
+            entries = []
+    per_tool: dict[str, dict[str, int]] = {}
+    for entry in entries:
+        if entry.get("kind") != "exec":
+            continue
+        tool = str(entry.get("tool", "?"))
+        cur = per_tool.setdefault(tool, {"calls": 0, "total_ms": 0})
+        cur["calls"] += 1
+        cur["total_ms"] += int(entry.get("ms") or 0)
+    aggregates = {
+        tool: {
+            "calls": counts["calls"],
+            "avg_ms": round(counts["total_ms"] / counts["calls"])
+            if counts["calls"]
+            else 0,
+        }
+        for tool, counts in per_tool.items()
+    }
+    last = entries[-1] if entries else None
+    return {
+        "last_activity": last.get("ts") if last else None,
+        "recent": entries[-limit:],
+        "aggregates": aggregates,
+        "knobs": _read_knobs(worktree),
+    }
 
 
 def _list_tools() -> types.ListToolsResult:
@@ -430,9 +596,118 @@ def _bridge_call(command: str, req: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _route_result(data: dict[str, Any]) -> types.CallToolResult:
+    payload = json.dumps(data, default=str, ensure_ascii=False)
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=payload)],
+        structured_content=json.loads(payload),
+        is_error=bool(data.get("ok", True) is False and data.get("source") is None),
+    )
+
+
+def _call_route(worktree: str, arguments: dict[str, Any]) -> types.CallToolResult:
+    mode = str(arguments.get("mode", "")).strip()
+    situation = str(arguments.get("situation", ""))[:500]
+    if not situation.strip():
+        raise ValueError("situation is required (max 500 chars)")
+    if mode == "assess":
+        severity = str(arguments.get("severity", "")).lower().strip()
+        if severity not in {"light", "medium", "high"}:
+            raise ValueError(
+                "severity is required for assess on MCP (light | medium | high)"
+            )
+        engage = _engage_for(severity)
+        _append_evidence(
+            worktree,
+            {
+                "kind": "assess",
+                "tool": "school_route",
+                "ms": 0,
+                "ok": True,
+                "severity": severity,
+                "engage": engage,
+            },
+        )
+        return _route_result(
+            {
+                "source": "self-rated",
+                "severity": severity,
+                "engage": engage,
+                "reason": "self-rated (MCP has no model client)",
+                "next": "Load the `school-routing` skill so tool and skill work together.",
+            }
+        )
+    if mode == "report":
+        lesson = str(arguments.get("lesson", "")).strip()[:1000]
+        if not lesson:
+            raise ValueError("lesson is required for mode=report")
+        outcome = (
+            arguments.get("outcome")
+            if arguments.get("outcome") in {"helpful", "useless", "neutral"}
+            else "helpful"
+        )
+        req = _build_request(
+            worktree,
+            "school_remember",
+            {
+                "content": f"Routing lesson ({outcome}): {lesson}",
+                "observation": situation or None,
+                "action": lesson,
+                "outcome": {
+                    "helpful": "SUCCESS",
+                    "useless": "FAILURE",
+                    "neutral": "NEUTRAL",
+                }[outcome],
+                "tags": ["routing", outcome],
+            },
+        )
+        resp = _bridge_call("remember", req)
+        _append_evidence(
+            worktree,
+            {
+                "kind": "report",
+                "tool": "school_route",
+                "ms": 0,
+                "ok": bool(resp.get("ok")),
+                "outcome": outcome,
+            },
+        )
+        return _route_result(resp)
+    raise ValueError('mode must be "assess" or "report"')
+
+
+def _call_route_stats(worktree: str, arguments: dict[str, Any]) -> types.CallToolResult:
+    limit_raw = arguments.get("limit", 20)
+    try:
+        limit = max(1, min(int(limit_raw), 100))
+    except (TypeError, ValueError):
+        limit = 20
+    data = _read_stats(worktree, limit)
+    recall_req = _build_request(
+        worktree,
+        "school_recall",
+        {"query": "routing lesson", "confidence_threshold": 0, "limit": min(limit, 10)},
+    )
+    recall_req["context_budget"] = 1500
+    resp = _bridge_call("recall", recall_req)
+    lessons = resp.get("memories", []) if resp.get("ok") else []
+    data["lessons"] = [
+        {
+            "id": m.get("experience_id") or m.get("id"),
+            "content": str(m.get("content", ""))[:300],
+        }
+        for m in lessons
+    ]
+    return _route_result(data)
+
+
 def _call_tool(worktree: str, name: str, arguments: dict[str, Any]) -> types.CallToolResult:
     if name not in _TOOLS:
         raise ValueError(f"Unknown tool: {name}")
+    if name == "school_route":
+        return _call_route(worktree, arguments)
+    if name == "school_route_stats":
+        return _call_route_stats(worktree, arguments)
     req = _build_request(worktree, name, arguments)
     resp = _bridge_call(name.removeprefix("school_"), req)
     payload = json.dumps(resp, default=str, ensure_ascii=False)

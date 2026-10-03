@@ -35,6 +35,8 @@ EXPECTED_TOOLS = [
     "school_knowledge",
     "school_lifecycle",
     "school_diagnose",
+    "school_route",
+    "school_route_stats",
 ]
 
 
