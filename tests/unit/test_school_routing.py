@@ -161,6 +161,12 @@ class TestRouteTools:
         assert '"helpful"' in block and '"useless"' in block and '"neutral"' in block
         assert '"SUCCESS"' in block and '"FAILURE"' in block and '"NEUTRAL"' in block
         assert 'command: "remember"' in block
+        # The bridge persists only observation/action/outcome into memory
+        # content (observation falls back to content). A situation-bearing
+        # observation alone drops the lesson text, so the lesson must also
+        # ride in `action` — same field the MCP report uses.
+        assert "observation: situation" in block
+        assert "action: lesson" in block
 
     def test_assess_appends_evidence_and_metadata(self):
         idx = TS_PLUGIN_SOURCE.index("school_route: tool(")

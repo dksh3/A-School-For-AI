@@ -1206,6 +1206,7 @@ const School: Plugin = async (ctx) => {
               session: context.sessionID || undefined,
               content: `Routing lesson (${outcome}): ${lesson}`,
               observation: situation || undefined,
+              action: lesson,
               outcome:
                 outcome === "helpful"
                   ? "SUCCESS"
