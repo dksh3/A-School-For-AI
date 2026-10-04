@@ -257,3 +257,42 @@ class TestContextOptimizerTools:
             data = json.loads(result.content[0].text)
             assert data["matches"] == 1
             assert "a.py:1:def alpha():" in data["content"]
+
+
+class TestRouteStdio:
+    async def test_route_assess_self_rated(self, tmp_path: Path) -> None:
+        async with _server(tmp_path) as (session, _):
+            with pytest.raises(MCPError):
+                await session.call_tool(
+                    "school_route",
+                    {"mode": "assess", "situation": "starting a migration"},
+                )
+            res = await session.call_tool(
+                "school_route",
+                {
+                    "mode": "assess",
+                    "situation": "starting a migration",
+                    "severity": "medium",
+                },
+            )
+            assert res.is_error is False
+            data = json.loads(res.content[0].text)
+            assert data["source"] == "self-rated"
+            assert data["engage"] == "both"
+
+    async def test_route_report_then_stats(self, tmp_path: Path) -> None:
+        async with _server(tmp_path) as (session, _):
+            res = await session.call_tool(
+                "school_route",
+                {
+                    "mode": "report",
+                    "situation": "refactor planning",
+                    "lesson": "assess before choosing tools",
+                    "outcome": "helpful",
+                },
+            )
+            assert res.is_error is False
+            stats = await session.call_tool("school_route_stats", {"limit": 5})
+            assert stats.is_error is False
+            recent = json.loads(stats.content[0].text)["recent"]
+            assert any(e.get("kind") == "report" for e in recent)
