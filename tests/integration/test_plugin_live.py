@@ -1,0 +1,134 @@
+"""Live Node harness: run the real plugin TS through tool.execute.after."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+from pathlib import Path
+
+import pytest
+
+from school.plugin_source import TS_PLUGIN_SOURCE
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+FOOTER_ONE = re.compile(r"\[school ctx: \d+→\d+ tokens\]")
+
+HARNESS = """\
+import School from "./school.ts";
+import { readFileSync } from "node:fs";
+const [worktree, bigPath] = process.argv.slice(2);
+const hooks = await School({ worktree, directory: worktree });
+const text = readFileSync(bigPath, "utf8");
+const output = { title: "read", output: text, args: { filePath: "big.py" } };
+await hooks["tool.execute.after"](
+  { callID: "c1", tool: "read", sessionID: "t" },
+  output
+);
+process.stdout.write(
+  JSON.stringify({ output: output.output, title: output.title })
+);
+"""
+
+STUB_TOOL_JS = """\
+const chain = new Proxy(() => chain, {
+  get: (_t, p) => (p === "then" ? undefined : chain),
+  apply: () => chain,
+});
+export const tool = (t) => t;
+tool.schema = chain;
+"""
+STUB_INDEX_JS = "export {};\n"
+STUB_PKG = json.dumps(
+    {
+        "name": "@opencode-ai/plugin",
+        "version": "0.0.0",
+        "type": "module",
+        "exports": {".": "./index.js", "./tool": "./tool.js"},
+    }
+)
+
+
+def _big_py() -> str:
+    lines = ["def compute(a: int) -> int:"]
+    for i in range(600):
+        lines.append(f"    x = x + {i}")
+    return "\n".join(lines)
+
+
+@pytest.fixture
+def plugin_dir(tmp_path: Path) -> Path:
+    d = tmp_path / "plugin"
+    (d / "node_modules" / "@opencode-ai" / "plugin").mkdir(parents=True)
+    (d / "school.ts").write_text(TS_PLUGIN_SOURCE, encoding="utf-8")
+    (d / "package.json").write_text('{"type": "module"}', encoding="utf-8")
+    stub = d / "node_modules" / "@opencode-ai" / "plugin"
+    (stub / "package.json").write_text(STUB_PKG, encoding="utf-8")
+    (stub / "index.js").write_text(STUB_INDEX_JS, encoding="utf-8")
+    (stub / "tool.js").write_text(STUB_TOOL_JS, encoding="utf-8")
+    (d / "harness.mjs").write_text(HARNESS, encoding="utf-8")
+    return d
+
+
+def _run(plugin_dir: Path, worktree: Path, big: Path, env: dict) -> dict:
+    proc = subprocess.run(
+        ["node", str(plugin_dir / "harness.mjs"), str(worktree), str(big)],
+        cwd=str(plugin_dir),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.integration
+class TestLiveContextOptimizer:
+    def test_ts_fallback_compresses(self, plugin_dir: Path, tmp_path: Path):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        big = tmp_path / "big.py"
+        big.write_text(_big_py(), encoding="utf-8", newline="\n")
+        env = dict(os.environ)
+        env["SCHOOL_HOME"] = str(tmp_path / "nowhere")
+        env["PATH"] = str(tmp_path / "nopath")
+        env.pop("PYTHONPATH", None)
+        out = _run(plugin_dir, worktree, big, env)
+        assert out["output"] != out["output"][:0]  # sanity: ran
+        original = big.read_text(encoding="utf-8")
+        assert out["output"] != original
+        assert len(out["output"]) < len(original)
+        assert len(FOOTER_ONE.findall(out["output"])) == 1
+        assert "def compute(a: int) -> int:" in out["output"]
+        assert "school" in out["title"]
+
+    def test_bridge_path_preferred(self, plugin_dir: Path, tmp_path: Path):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        big = tmp_path / "big.py"
+        big.write_text(_big_py(), encoding="utf-8", newline="\n")
+        env = dict(os.environ)
+        env["SCHOOL_HOME"] = str(REPO_ROOT)
+        env["PYTHONPATH"] = str(REPO_ROOT)
+        scripts = str(REPO_ROOT / ".venv" / "Scripts")
+        env["PATH"] = scripts + os.pathsep + env.get("PATH", "")
+        out = _run(plugin_dir, worktree, big, env)
+        original = big.read_text(encoding="utf-8")
+        assert len(out["output"]) < len(original)
+        assert len(FOOTER_ONE.findall(out["output"])) == 1
+        assert "def compute(a: int) -> int:" in out["output"]
+
+    def test_kill_switch_raw(self, plugin_dir: Path, tmp_path: Path):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        big = tmp_path / "big.py"
+        big.write_text(_big_py(), encoding="utf-8", newline="\n")
+        env = dict(os.environ)
+        env["SCHOOL_CTX"] = "0"
+        out = _run(plugin_dir, worktree, big, env)
+        original = big.read_text(encoding="utf-8")
+        assert out["output"] == original
+        assert "school ctx" not in out["output"]

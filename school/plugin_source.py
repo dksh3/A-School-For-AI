@@ -494,7 +494,8 @@ function ctxDepthDelta(line: string): number {
 function ctxDeclLabel(line: string): string {
   const m = CTX_DECL_RE.exec(line);
   if (m) {
-    const rest = line.slice(m.index + m[0].length).replace(/^\s+/, "");
+    // The regex's trailing [A-Za-z_$] consumes the name's first character.
+    const rest = line.slice(m.index + m[0].length - 1).replace(/^\s+/, "");
     const nm = /^[A-Za-z_$][\w$]*/.exec(rest);
     const base = nm ? nm[0] : "";
     if (["def", "function", "fn", "func"].includes(m[1]) && base) return base + "()";
