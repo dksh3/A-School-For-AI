@@ -371,3 +371,83 @@ class TestBridgeVersionCompatibility:
         from school import __version__
 
         assert f'const SCHOOL_VERSION = "{__version__}"' in TS_PLUGIN_SOURCE
+
+
+class TestSkeletonCommand:
+    def test_registered_in_commands(self):
+        import school.bridge as bridge_mod
+
+        assert "skeleton" in bridge_mod._COMMANDS
+        assert bridge_mod._COMMANDS["skeleton"] is bridge_mod._handle_skeleton
+
+    def test_payload_compressed_with_footer(self):
+        import school.bridge as bridge_mod
+
+        text = "\n".join(f'{{"k": "some value {i}}}' for i in range(400))
+        out = bridge_mod._handle_skeleton(
+            {"text": text, "filename": "data.json"}
+        )
+        assert out["ok"] is True
+        assert out["compressed"] is True
+        assert out["tokens_in"] >= 1000
+        assert out["tokens_out"] < out["tokens_in"]
+        assert "[school ctx:" in out["content"]
+        assert out["parser"] == "payload"
+
+    def test_small_text_passthrough(self):
+        import school.bridge as bridge_mod
+
+        out = bridge_mod._handle_skeleton({"text": "tiny", "filename": "a.txt"})
+        assert out["ok"] is True
+        assert out["compressed"] is False
+        assert out["content"] == "tiny"
+        assert "school ctx" not in out["content"]
+
+    def test_missing_text_validation(self):
+        import school.bridge as bridge_mod
+
+        out = bridge_mod._handle_skeleton({})
+        assert out["ok"] is False
+        assert out["error"]["type"] == "validation"
+
+    def test_invalid_strategy_validation(self):
+        import school.bridge as bridge_mod
+
+        out = bridge_mod._handle_skeleton(
+            {"text": "x" * 4000, "strategy": "nope"}
+        )
+        assert out["ok"] is False
+        assert out["error"]["type"] == "validation"
+
+    def test_kill_switch(self, monkeypatch):
+        import school.bridge as bridge_mod
+
+        monkeypatch.setenv("SCHOOL_CTX", "0")
+        text = "\n".join(f'{{"k": "some value {i}}}' for i in range(400))
+        out = bridge_mod._handle_skeleton({"text": text, "filename": "d.json"})
+        assert out["ok"] is True
+        assert out["compressed"] is False
+        assert out["content"] == text
+
+    def test_stdio_roundtrip(self):
+        import json as json_mod
+        from io import StringIO
+        from unittest.mock import patch
+
+        import school.bridge as bridge_mod
+
+        text = "\n".join(f'{{"k": "some value {i}}}' for i in range(400))
+        payload = json_mod.dumps(
+            {"command": "skeleton", "text": text, "filename": "d.json"}
+        )
+        stdin = StringIO(payload)
+        stdout = StringIO()
+        with (
+            patch("sys.stdin", stdin),
+            patch("sys.stdout", stdout),
+        ):
+            bridge_mod.main()
+        output = json_mod.loads(stdout.getvalue())
+        assert output["ok"] is True
+        assert output["compressed"] is True
+        assert "[school ctx:" in output["content"]

@@ -11,6 +11,7 @@ Commands:
     status   — check component availability
     remember — store an experience through V2.6
     recall   — retrieve memories through V2.6
+    skeleton — Context Optimizer (skeletonize oversized text)
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from core.routing.v26.security import (
 )
 from school import __version__
 from school.config import resolve_memory_dir
+from school.skeleton import optimize
 
 # ---------------------------------------------------------------------------
 # Bridge state (lazily initialised, lives for one process invocation)
@@ -279,6 +281,31 @@ def _handle_search(req): return _dispatch_to_orchestrator("school_search", req)
 def _handle_knowledge(req): return _dispatch_to_orchestrator("school_knowledge", req)
 
 
+def _handle_skeleton(req: dict) -> dict:
+    text = req.get("text", "")
+    if not isinstance(text, str) or not text:
+        return {
+            "ok": False,
+            "error": {"type": "validation", "message": "text is required"},
+        }
+    filename = str(req.get("filename", "") or "")
+    strategy = str(req.get("strategy", "auto") or "auto")
+    if strategy not in {"auto", "code", "payload", "matches"}:
+        return {
+            "ok": False,
+            "error": {"type": "validation", "message": f"unknown strategy: {strategy}"},
+        }
+    result = optimize(text, filename=filename, strategy=strategy)
+    return {
+        "ok": True,
+        "content": result.text,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "compressed": result.compressed,
+        "parser": result.parser,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Command dispatch
 # ---------------------------------------------------------------------------
@@ -295,6 +322,7 @@ _COMMANDS = {
     "lifecycle": _handle_lifecycle,
     "search": _handle_search,
     "knowledge": _handle_knowledge,
+    "skeleton": _handle_skeleton,
 }
 
 
