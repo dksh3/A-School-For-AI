@@ -299,6 +299,16 @@ _LABEL_TYPES = {
     "switch_case", "switch_default", "case_statement", "switch_label",
     "switch_block_statement_group", "arm",
 }
+_LOOP_TYPES = {
+    "python": {"for_statement", "while_statement"},
+    "javascript": {"for_statement", "for_in_statement", "while_statement", "do_statement"},
+    "typescript": {"for_statement", "for_in_statement", "while_statement", "do_statement"},
+    "go": {"for_statement"},
+    "rust": {"for_expression", "while_expression", "loop_expression"},
+    "java": {"for_statement", "while_statement", "do_statement"},
+    "c": {"for_statement", "while_statement", "do_statement"},
+    "cpp": {"for_statement", "for_range_loop", "while_statement", "do_statement"},
+}
 _IDENT_TYPES = {
     "identifier", "type_identifier", "field_identifier",
     "property_identifier", "name",
@@ -470,19 +480,26 @@ def _walk_children(ctx: dict, children: list, label: str | None) -> str | None:
     bodies = _BODY_TYPES[lang]
     keep_whole = _KEEP_WHOLE_TYPES[lang]
     comments = _COMMENT_TYPES[lang]
+    loops = _LOOP_TYPES[lang]
     run: list = []
     seen_code = False
+    prev_kept: bool | None = None
+    forced_drop = False
 
-    def flush(end: int | None = None) -> None:
+    def flush(keep_single: bool = False) -> None:
+        nonlocal forced_drop
         if not run:
             return
-        stop = run[-1].end_byte if end is None else end
-        span = ctx["src"][run[0].start_byte:stop].count(b"\n") + 1
+        # Honest count: only lines inside the run's own nodes are absent,
+        # so the span covers run[0]..run[-1] and nothing beyond it.
+        span = ctx["src"][run[0].start_byte:run[-1].end_byte].count(b"\n") + 1
         if span >= 2:
             _emit_marker(ctx, label or "body", span)
-        else:
+        elif keep_single and not forced_drop:
             _emit(ctx, run[0].start_byte, run[-1].end_byte)
+        # Single line in a drop position: dropped silently, no marker.
         run.clear()
+        forced_drop = False
 
     for child in children:
         if not child.is_named:
@@ -492,6 +509,7 @@ def _walk_children(ctx: dict, children: list, label: str | None) -> str | None:
             continue
         if child.type in comments:
             flush()
+            prev_kept = False
             continue
         if not seen_code and _is_string_like(child):
             start_line_end = child.start_byte + (
@@ -502,16 +520,34 @@ def _walk_children(ctx: dict, children: list, label: str | None) -> str | None:
             if tail >= 2:
                 _emit_marker(ctx, "docstring", tail)
             seen_code = True
+            prev_kept = True
             continue
         if child.type in imports or child.type in keep_whole:
             flush()
             _emit(ctx, child.start_byte, child.end_byte)
             seen_code = True
+            prev_kept = True
             continue
         if child.type in decls or child.type in ctrls or child.type in bodies:
-            flush(child.end_byte if child.type in ctrls else None)
+            if child.type in loops:
+                if prev_kept is True:
+                    # A loop continuing a kept chain is skeleton material.
+                    flush()
+                    label = _walk(ctx, child, label)
+                    prev_kept = True
+                else:
+                    # A loop whose preceding statement was dropped reads as
+                    # noise (mirrors the heuristic rule); drop it whole and
+                    # merge it into the run so marker counts stay honest.
+                    run.append(child)
+                    forced_drop = True
+                    prev_kept = False
+                seen_code = True
+                continue
+            flush()
             label = _walk(ctx, child, label)
             seen_code = True
+            prev_kept = True
             continue
         if child.type == "ERROR":
             flush()
@@ -525,10 +561,12 @@ def _walk_children(ctx: dict, children: list, label: str | None) -> str | None:
             flush()
             _emit(ctx, child.start_byte, child.end_byte)
             seen_code = True
+            prev_kept = True
             continue
         run.append(child)
+        prev_kept = False
         seen_code = True
-    flush()
+    flush(keep_single=True)
     return label
 
 

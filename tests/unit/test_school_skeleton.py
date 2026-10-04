@@ -313,8 +313,6 @@ class TestFilenameRouting:
 
 PY_AST_SAMPLE = PY_SAMPLE_FOR_AST = TestHeuristicContract.PY_SAMPLE
 
-tree_sitter = pytest.importorskip("tree_sitter", reason="ctx extra not installed")
-
 GO_SAMPLE = """\
 package main
 
