@@ -167,6 +167,10 @@ def _cmd_install(args: argparse.Namespace) -> None:
     plugin_file.write_text(TS_PLUGIN_SOURCE, encoding="utf-8")
     print(f"Plugin installed: {plugin_file}")
 
+    # Write the school-routing skill alongside the plugin
+    skill_file = install_skill()
+    print(f"Skill installed: {skill_file}")
+
     # Verify bridge
     bridge = discover_bridge(".")
     if bridge:
@@ -177,6 +181,21 @@ def _cmd_install(args: argparse.Namespace) -> None:
     print("")
     print("Installation complete!")
     print("Restart OpenCode to use School.")
+
+
+def install_skill(dest_root: str | Path | None = None) -> Path:
+    """Write the school-routing skill to OpenCode's user skill directory."""
+    from .skill_source import ROUTING_SKILL_MD
+
+    root = (
+        Path(dest_root)
+        if dest_root
+        else Path.home() / ".config" / "opencode" / "skills"
+    )
+    target = root / "school-routing" / "SKILL.md"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(ROUTING_SKILL_MD, encoding="utf-8")
+    return target
 
 
 def _cmd_doctor(args: argparse.Namespace) -> None:
