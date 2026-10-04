@@ -230,3 +230,44 @@ class TestRecallForExecution:
         body = match.group(0)
         assert "return null" in body
         assert "throw" not in body
+
+
+def _fn_block(name: str) -> str:
+    m = re.search(
+        rf"(?:async )?function {name}\([\s\S]*?\n\}}",
+        TS_PLUGIN_SOURCE,
+    )
+    assert m, f"function {name} not found in plugin source"
+    return m.group(0)
+
+
+class TestContextOptimizer:
+    def test_constants(self):
+        assert "const CTX_THRESHOLD = 1000" in TS_PLUGIN_SOURCE
+        assert "const CTX_TIMEOUT_MS = 2000" in TS_PLUGIN_SOURCE
+
+    def test_kill_switch(self):
+        assert 'process.env.SCHOOL_CTX !== "0"' in TS_PLUGIN_SOURCE
+
+    def test_footer_regex_literal(self):
+        assert r"\[school ctx: \d+→\d+ tokens\]" in TS_PLUGIN_SOURCE
+
+    def test_ctx_optimize_uses_bridge_with_timeout(self):
+        block = _fn_block("ctxOptimize")
+        assert 'command: "skeleton"' in block
+        assert "CTX_TIMEOUT_MS" in block
+        assert "ctxEnabled" in block
+        assert "catch" in block
+
+    def test_after_hook_wires_optimization(self):
+        block = _hook_block("tool.execute.after")
+        assert "ctxOptimize(" in block
+        assert 'startsWith("Error")' in block
+        assert "CTX_THRESHOLD" in block
+        assert block.index("ctxOptimize(") < block.index(
+            "rec && rec.hits > 0"
+        ), "compression must run before the recall block append"
+
+    def test_helper_functions_present(self):
+        for name in ("ctxEnabled", "ctxEstimate", "ctxHeuristic", "ctxPayload"):
+            _fn_block(name)

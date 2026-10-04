@@ -387,6 +387,327 @@ function formatRecallLines(memories: any[]): string[] {
   })
 }
 
+// Context optimizer: threshold-gated trimming of large tool outputs.
+const CTX_THRESHOLD = 1000
+const CTX_TIMEOUT_MS = 2000
+const CTX_FOOTER_RE = /\[school ctx: \d+→\d+ tokens\]\s*$/;
+const CTX_CODE_RE = new RegExp(
+  "\\.(py|pyi|js|jsx|mjs|cjs|ts|tsx|go|rs|java|c|h|cpp|cc|cxx|hpp|hh|hxx" +
+    "|sh|bash|rb|php|cs|kt|swift|sql|ya?ml|toml|ini|cfg|conf|lua|pl|r|scala" +
+    "|ex|exs|hs|clj|cljs|graphql|proto|tf)$",
+  "i"
+);
+const CTX_NOISE = new Set([
+  "import", "from", "as", "require", "const", "let", "var", "use",
+  "using", "include", "package", "export", "default", "async", "await", "type",
+]);
+
+function ctxEnabled(): boolean {
+  return process.env.SCHOOL_CTX !== "0";
+}
+function ctxEstimate(s: string): number {
+  return Math.ceil(s.length / 4);
+}
+function ctxStripFooter(t: string): string {
+  return t.replace(CTX_FOOTER_RE, "").replace(/\s+$/, "");
+}
+function ctxFooter(i: number, o: number): string {
+  return `[school ctx: ${i}→${o} tokens]`;
+}
+function ctxSuffix(filename: string): string {
+  const name = filename.toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot > 0 ? name.slice(dot) : "";
+}
+function ctxCommentPrefix(filename: string): string {
+  const ext = ctxSuffix(filename);
+  const slashExt = new RegExp(
+    "\\.(c|h|cpp|cc|cxx|hpp|hh|hxx|js|jsx|mjs|cjs|ts|tsx|go|rs|java|kt|cs" +
+      "|swift|scala|php)$"
+  );
+  if (slashExt.test(ext)) return "//";
+  if (/\.(sql|lua|pl)$/.test(ext)) return "--";
+  return "#";
+}
+const CTX_LICENSE_RE = /copyright|licensed?\s+under|spdx-|all\s+rights\s+reserved/i;
+const CTX_IMPORT_RE = new RegExp(
+  "^\\s*(import\\b|from\\s+\\S+\\s+import\\b|require\\s*\\(|use\\s|using\\s" +
+    "|include\\s|package\\s+\\w|export\\s+.*\\sfrom\\s" +
+    "|#\\s*(include|define|if|ifdef|ifndef|pragma)\\b)"
+);
+const CTX_DECL_RE = new RegExp(
+  "^\\s*(?:(?:export|default|async|pub|public|private|protected|static|final" +
+    "|abstract|override|virtual)\\s+)*(def|class|function|fn|func|struct|enum" +
+    "|trait|impl|interface|type|namespace|module)\\s+[A-Za-z_$]"
+);
+const CTX_ARROW_RE = /^\s*(export\s+)?(const|let|var)\s+[\w$]+\s*=.*=>/;
+const CTX_CONTROL_RE = new RegExp(
+  "^\\s*(if|else|elif|for|while|do|switch|case|default|try|except|catch" +
+    "|finally|return|yield|break|continue|match|guard|when|raise|throw|assert)\\b"
+);
+const CTX_CLOSER_RE = /^\s*[}\])]+;?\s*$/;
+const CTX_SIG_RE = /^\s*[A-Za-z_][\w.]*\s*:(\s|$)/;
+const CTX_SQL_KEEP_RE = new RegExp(
+  "^\\s*(select|from|where|group\\s+by|order\\s+by|having|limit|offset|join" +
+    "|left|right|inner|outer|full|union|values|insert\\s+into|update" +
+    "|delete\\s+from|create|alter|drop|with|returning|set|into|on|begin" +
+    "|end|commit|rollback)\\b",
+  "i"
+);
+const CTX_YAML_KEY_RE = /^[A-Za-z_][\w.-]*\s*:/;
+
+function ctxClassify(lines: string[]): string[] {
+  const kinds: string[] = [];
+  let mode = "";
+  for (const line of lines) {
+    const stripped = line.trim();
+    if (mode) {
+      kinds.push("string_cont");
+      if (stripped.includes(mode)) mode = "";
+      continue;
+    }
+    if (!stripped) { kinds.push("blank"); continue; }
+    if (stripped.startsWith("#") || stripped.startsWith("//") ||
+        stripped.startsWith("/*") || stripped.startsWith("*") ||
+        stripped.startsWith("--")) { kinds.push("comment"); continue; }
+    const dq = (line.match(/"""/g) || []).length;
+    const sq = (line.match(/'{3}/g) || []).length;
+    const tick = (line.match(/`/g) || []).length;
+    if (dq % 2 === 1) { kinds.push("string_first"); mode = '"""'; }
+    else if (sq % 2 === 1) { kinds.push("string_first"); mode = "'".repeat(3); }
+    else if (tick % 2 === 1) { kinds.push("string_first"); mode = "`"; }
+    else kinds.push("code");
+  }
+  return kinds;
+}
+function ctxDepthDelta(line: string): number {
+  const cleaned = line
+    .replace(/"[^"]*"|'[^']*'/g, "")
+    .replace(/(#|\/\/|--).*$/, "");
+  let d = 0;
+  for (const ch of cleaned) {
+    if (ch === "(" || ch === "[" || ch === "{") d += 1;
+    else if (ch === ")" || ch === "]" || ch === "}") d -= 1;
+  }
+  return d;
+}
+function ctxDeclLabel(line: string): string {
+  const m = CTX_DECL_RE.exec(line);
+  if (m) {
+    const rest = line.slice(m.index + m[0].length).replace(/^\s+/, "");
+    const nm = /^[A-Za-z_$][\w$]*/.exec(rest);
+    const base = nm ? nm[0] : "";
+    if (["def", "function", "fn", "func"].includes(m[1]) && base) return base + "()";
+    return base || m[1];
+  }
+  const rest = line.trim().replace(/^export\s+/, "");
+  const m2 = /^(?:const|let|var)\s+([\w$]+)/.exec(rest);
+  if (m2 && CTX_ARROW_RE.test(line)) return m2[1] + "()";
+  return "body";
+}
+function ctxKeep(line: string, ext: string, kind: string): string {
+  if (kind === "comment") return "comment";
+  const s = line.trim();
+  if (!s) return "blank";
+  if (CTX_IMPORT_RE.test(line)) return "import";
+  if (/^\s*@\w/.test(line)) return "decorator";
+  if (CTX_DECL_RE.test(line) || CTX_ARROW_RE.test(line)) return "decl";
+  if (CTX_CONTROL_RE.test(line)) return "control";
+  if (CTX_CLOSER_RE.test(line)) return "closer";
+  const sqlish = ext === ".sql" || ext === ".graphql" || ext === ".gql";
+  if (sqlish && CTX_SQL_KEEP_RE.test(line)) return "sql";
+  if ((ext === ".yaml" || ext === ".yml") && CTX_YAML_KEY_RE.test(line)) return "yaml";
+  if (CTX_SIG_RE.test(line)) return "sig";
+  return "body";
+}
+function ctxImportNames(line: string): Set<string> {
+  const out = new Set<string>();
+  for (const w of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) || []) {
+    if (!CTX_NOISE.has(w) && w.length > 1) out.add(w);
+  }
+  return out;
+}
+function ctxHeuristic(text: string, filename: string): string {
+  const ext = ctxSuffix(filename);
+  const prefix = ctxCommentPrefix(filename);
+  const lines = text.split("\n");
+  if (lines.length === 0) return text;
+  const kinds = ctxClassify(lines);
+  const drop = new Array(lines.length).fill(false);
+  let firstBlock = true;
+  let headerEnd = 0;
+  let i = 0;
+  while (i < lines.length) {
+    if (kinds[i] !== "comment") { i += 1; continue; }
+    const start = i;
+    while (i < lines.length && kinds[i] === "comment") i += 1;
+    const block = lines.slice(start, i);
+    const beforeAllCode = kinds.slice(0, start).every((k) => k !== "code");
+    if (firstBlock && beforeAllCode) {
+      if (block.some((c) => CTX_LICENSE_RE.test(c))) {
+        for (let j = start; j < i; j += 1) drop[j] = true;
+      } else {
+        let kept = 0;
+        for (let j = start; j < i; j += 1) {
+          if (kept < 3) kept += 1; else drop[j] = true;
+        }
+      }
+      headerEnd = i;
+      firstBlock = false;
+    } else {
+      for (let j = start; j < i; j += 1) drop[j] = true;
+    }
+  }
+  const refset = new Set<string>();
+  lines.forEach((line, idx) => {
+    if (kinds[idx] === "code" && !CTX_IMPORT_RE.test(line)) {
+      for (const w of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) || []) refset.add(w);
+    }
+  });
+  let keptDepth = 0;
+  let label = "body";
+  const keep = new Array(lines.length).fill(false);
+  lines.forEach((line, idx) => {
+    const kind = kinds[idx];
+    if (drop[idx]) return;
+    if (kind === "blank") { keep[idx] = true; return; }
+    if (kind === "string_first") { keep[idx] = true; return; }
+    if (kind === "string_cont") return;
+    if (kind === "comment") { keep[idx] = headerEnd > 0 && idx < headerEnd; return; }
+    const cls = ctxKeep(line, ext, "code");
+    if (keptDepth > 0) {
+      keep[idx] = true;
+      keptDepth += ctxDepthDelta(line);
+      return;
+    }
+    if (["import", "decorator", "decl", "control", "closer", "sql", "yaml", "sig"].includes(cls)) {
+      if (cls === "import") {
+        let hit = false;
+        for (const n of ctxImportNames(line)) if (refset.has(n)) { hit = true; break; }
+        if (!hit) return;
+      }
+      keep[idx] = true;
+      keptDepth += ctxDepthDelta(line);
+      if (cls === "decl") label = ctxDeclLabel(line);
+    }
+  });
+  const out: string[] = [];
+  let run: number[] = [];
+  let runLabel = label;
+  let pendingBlank = false;
+  let prevStringFirst = false;
+  const flush = () => {
+    if (run.length > 0) {
+      if (run.length >= 2) out.push(`${prefix} … ${runLabel} — ${run.length} lines`);
+      run = [];
+    }
+    runLabel = label;
+  };
+  lines.forEach((line, idx) => {
+    if (drop[idx]) return;
+    if (!keep[idx]) {
+      if (kinds[idx] === "blank") return;
+      run.push(idx);
+      if (run.length === 1 && prevStringFirst && kinds[idx] === "string_cont") {
+        runLabel = "docstring";
+      }
+      prevStringFirst = false;
+      return;
+    }
+    flush();
+    if (kinds[idx] === "blank") {
+      if (pendingBlank) return;
+      pendingBlank = true;
+      out.push("");
+    } else {
+      pendingBlank = false;
+      out.push(line);
+      if (kinds[idx] === "decl") label = ctxDeclLabel(line);
+      prevStringFirst = kinds[idx] === "string_first";
+    }
+  });
+  flush();
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  return out.join("\n");
+}
+function ctxShape(line: string): string {
+  const s = line.trim();
+  if (!s) return "";
+  if (/^"(?:[^"\\]|\\.)*",?$/.test(s) || /^'(?:[^'\\]|\\.)*',?$/.test(s)) return "S";
+  if (/^-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?,?$/.test(s)) return "N";
+  if (/^(true|false|null|nil|undefined),?$/i.test(s)) return "K";
+  if (s[0] === "{" || s[0] === "[") return "B";
+  if (s[0] === "}" || s[0] === "]") return "C";
+  if (/^[\w$.-]+(?:\s*:\s*.+)?,?$/.test(s)) return "I";
+  return "O";
+}
+function ctxPayload(text: string): string {
+  const prefix = "#";
+  const lines = text.split("\n");
+  const out: string[] = [];
+  let i = 0;
+  let pendingBlank = false;
+  while (i < lines.length) {
+    if (!lines[i].trim()) { pendingBlank = true; i += 1; continue; }
+    const shape = ctxShape(lines[i]);
+    let j = i;
+    while (j < lines.length && lines[j].trim() && ctxShape(lines[j]) === shape) j += 1;
+    const runLen = j - i;
+    if (runLen >= 6) {
+      if (pendingBlank) { out.push(""); pendingBlank = false; }
+      out.push(lines[i]);
+      out.push(lines[i + 1]);
+      out.push(`${prefix} … repeated block — ${runLen - 2} lines`);
+    } else {
+      for (let k = i; k < j; k += 1) {
+        if (pendingBlank) { out.push(""); pendingBlank = false; }
+        out.push(lines[k]);
+      }
+    }
+    i = j;
+  }
+  return out.join("\n");
+}
+async function ctxOptimize(
+  python: string,
+  bridgePath: string,
+  text: string,
+  filename: string
+): Promise<string | null> {
+  try {
+    if (!ctxEnabled()) return null;
+    const body = ctxStripFooter(text);
+    const tokensIn = ctxEstimate(body);
+    if (tokensIn < CTX_THRESHOLD) return null;
+    if (python && bridgePath) {
+      try {
+        const resp = await invokeBridge(
+          python,
+          bridgePath,
+          { command: "skeleton", text: body, filename },
+          CTX_TIMEOUT_MS
+        );
+        const r = resp as { ok?: boolean; compressed?: boolean; content?: string };
+        if (r.ok) {
+          return r.compressed === true && typeof r.content === "string"
+            ? r.content
+            : null;
+        }
+      } catch {
+        /* fall through to TS heuristic */
+      }
+    }
+    const out = CTX_CODE_RE.test(filename)
+      ? ctxHeuristic(body, filename)
+      : ctxPayload(body);
+    const tokensOut = ctxEstimate(out);
+    if (tokensOut >= tokensIn) return null;
+    return `${out}\n\n${ctxFooter(tokensIn, tokensOut)}`;
+  } catch {
+    return null;
+  }
+}
+
 const School: Plugin = async (ctx) => {
   const bridge = await discoverBridge(ctx.worktree)
 
@@ -1404,6 +1725,17 @@ const School: Plugin = async (ctx) => {
     "tool.execute.after": async (input, output) => {
       try {
         if (!hooksEnabled()) return
+        if (typeof output.output === "string") {
+          const raw = output.output;
+          const isErr =
+            raw.startsWith("Error") || (output as { isError?: boolean }).isError === true;
+          if (!isErr && ctxEstimate(ctxStripFooter(raw)) >= CTX_THRESHOLD) {
+            const anyOut = output as { args?: { filePath?: string; path?: string } };
+            const filename = String(anyOut.args?.filePath ?? anyOut.args?.path ?? "");
+            const optimized = await ctxOptimize(python, bridgePath, raw, filename);
+            if (optimized !== null) output.output = optimized;
+          }
+        }
         const rec = executionRecalls.get(input.callID) ?? null
         executionRecalls.delete(input.callID)
         // Visible marker on EVERY execution — hits, zero hits, and degraded.
