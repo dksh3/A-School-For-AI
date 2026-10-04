@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,6 +27,7 @@ from mcp.server.lowlevel import Server
 from mcp.server.stdio import stdio_server
 
 from school import __version__, bridge
+from school.skeleton import optimize
 
 STATUS_URI = "school://status"
 CONTEXT_URI_TEMPLATE = "school://context/{project}"
@@ -392,6 +394,69 @@ _TOOLS: dict[str, dict[str, Any]] = {
             },
         },
     },
+    "school_read": {
+        "description": (
+            "Read a text file with the Context Optimizer: small files come back raw, "
+            "oversized results are skeletonized (signatures, imports, control flow kept; "
+            "bodies elided) with a single [school ctx: in->out tokens] footer. "
+            "Use for file contents; pass offset/limit to re-read a region raw after an elision."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "File to read (absolute, or relative to the worktree).",
+                },
+                "offset": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "1-based first line to return (defaults to 1).",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Maximum number of lines to return from offset.",
+                },
+            },
+            "required": ["path"],
+            "additionalProperties": False,
+        },
+    },
+    "school_grep": {
+        "description": (
+            "Search files under a path for a regular expression and return "
+            "path:line:content matches (Context Optimizer footer when oversized). "
+            "Use to locate code/text across a project without reading whole files."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": "Regular expression to search for.",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "File or directory to search (defaults to the worktree).",
+                },
+                "ignore_case": {
+                    "type": "boolean",
+                    "description": "Case-insensitive search.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 1000,
+                    "description": "Maximum matches to return (default 200).",
+                },
+            },
+            "required": ["pattern"],
+            "additionalProperties": False,
+        },
+    },
 }
 
 
@@ -605,6 +670,27 @@ def _route_result(data: dict[str, Any]) -> types.CallToolResult:
     )
 
 
+_SKIPPED_DIRS = frozenset({
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".school",
+    ".evo", "dist", "build", ".mypy_cache", ".ruff_cache", ".pytest_tmp",
+    ".pytest_cache", ".opencode", ".superpowers",
+})
+_MAX_GREP_FILE = 1_000_000
+
+
+def _result(data: dict) -> types.CallToolResult:
+    payload = json.dumps(data, default=str, ensure_ascii=False)
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text=payload)],
+        structured_content=json.loads(payload),
+        is_error=not bool(data.get("ok", False)),
+    )
+
+
+def _error_result(err_type: str, message: str) -> types.CallToolResult:
+    return _result({"ok": False, "error": {"type": err_type, "message": message}})
+
+
 def _call_route(worktree: str, arguments: dict[str, Any]) -> types.CallToolResult:
     mode = str(arguments.get("mode", "")).strip()
     situation = str(arguments.get("situation", ""))[:500]
@@ -701,6 +787,118 @@ def _call_route_stats(worktree: str, arguments: dict[str, Any]) -> types.CallToo
     return _route_result(data)
 
 
+def _int_arg(value: object, default: int, lo: int, hi: int) -> int:
+    try:
+        n = int(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _call_read(worktree: str, arguments: dict) -> types.CallToolResult:
+    raw = str(arguments.get("path", "") or "").strip()
+    if not raw:
+        return _error_result("validation", "path is required")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path(worktree) / path
+    if not path.exists():
+        return _error_result("not_found", f"no such file: {raw}")
+    if path.is_dir():
+        return _error_result("validation", f"is a directory: {raw}")
+    try:
+        data = path.read_bytes()
+    except OSError as exc:
+        return _error_result("io", str(exc))
+    if b"\x00" in data[:8192]:
+        return _error_result("io", "binary file")
+    text = data.decode("utf-8", errors="replace")
+    lines = text.splitlines()
+    offset = _int_arg(arguments.get("offset"), 1, 1, 1 << 30)
+    limit = None
+    if arguments.get("limit") is not None:
+        limit = _int_arg(arguments.get("limit"), len(lines), 1, 1 << 30)
+    window = lines[offset - 1:]
+    if limit is not None:
+        window = window[:limit]
+    content = "\n".join(window)
+    result = optimize(content, filename=str(path))
+    return _result({
+        "ok": True,
+        "path": str(path),
+        "content": result.text,
+        "skeletonized": result.compressed,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "parser": result.parser,
+    })
+
+
+def _call_grep(worktree: str, arguments: dict) -> types.CallToolResult:
+    pattern = str(arguments.get("pattern", "") or "")
+    if not pattern:
+        return _error_result("validation", "pattern is required")
+    flags = re.IGNORECASE if arguments.get("ignore_case") else 0
+    try:
+        rx = re.compile(pattern, flags)
+    except re.error as exc:
+        return _error_result("validation", f"invalid regex: {exc}")
+    raw = str(arguments.get("path", "") or "").strip() or worktree
+    target = Path(raw)
+    if not target.is_absolute():
+        target = Path(worktree) / target
+    if not target.exists():
+        return _error_result("not_found", f"no such path: {raw}")
+    limit = _int_arg(arguments.get("limit"), 200, 1, 1000)
+    if target.is_file():
+        files = [target]
+        base = target.parent
+    else:
+        files = sorted(
+            p for p in target.rglob("*")
+            if p.is_file()
+            and not any(part in _SKIPPED_DIRS for part in p.relative_to(target).parts)
+        )
+        base = target
+    matches: list[str] = []
+    truncated = False
+    for file in files:
+        try:
+            if file.stat().st_size > _MAX_GREP_FILE:
+                continue
+            data = file.read_bytes()[:8192]
+            if b"\x00" in data:
+                continue
+        except OSError:
+            continue
+        try:
+            body = file.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = file.relative_to(base)
+        for lineno, line in enumerate(body.splitlines(), start=1):
+            if rx.search(line):
+                matches.append(f"{rel}:{lineno}:{line.rstrip()}")
+                if len(matches) >= limit:
+                    truncated = True
+                    break
+        if truncated:
+            break
+    content = "\n".join(matches)
+    result = optimize(content, strategy="matches")
+    return _result({
+        "ok": True,
+        "path": str(target),
+        "matches": len(matches),
+        "truncated": truncated,
+        "content": result.text,
+        "skeletonized": result.compressed,
+        "tokens_in": result.tokens_in,
+        "tokens_out": result.tokens_out,
+        "parser": result.parser,
+    })
+
+
 def _call_tool(worktree: str, name: str, arguments: dict[str, Any]) -> types.CallToolResult:
     if name not in _TOOLS:
         raise ValueError(f"Unknown tool: {name}")
@@ -708,6 +906,10 @@ def _call_tool(worktree: str, name: str, arguments: dict[str, Any]) -> types.Cal
         return _call_route(worktree, arguments)
     if name == "school_route_stats":
         return _call_route_stats(worktree, arguments)
+    if name == "school_read":
+        return _call_read(worktree, arguments)
+    if name == "school_grep":
+        return _call_grep(worktree, arguments)
     req = _build_request(worktree, name, arguments)
     resp = _bridge_call(name.removeprefix("school_"), req)
     payload = json.dumps(resp, default=str, ensure_ascii=False)

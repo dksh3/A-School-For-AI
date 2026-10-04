@@ -37,6 +37,8 @@ EXPECTED_TOOLS = [
     "school_diagnose",
     "school_route",
     "school_route_stats",
+    "school_read",
+    "school_grep",
 ]
 
 
@@ -213,3 +215,45 @@ class TestIsolation:
             )
             payload = json.loads(result.content[0].text)
             assert any(token in m["content"] for m in payload["memories"])
+
+
+class TestContextOptimizerTools:
+    async def test_small_read_raw(self, tmp_path: Path) -> None:
+        (tmp_path / "small.txt").write_text("hello world\n", encoding="utf-8")
+        async with _server(tmp_path) as (session, _):
+            result = await session.call_tool("school_read", {"path": "small.txt"})
+            assert not result.is_error
+            data = json.loads(result.content[0].text)
+            assert data["ok"] is True
+            assert data["skeletonized"] is False
+            assert data["content"] == "hello world"
+
+    async def test_oversized_read_skeletonized(self, tmp_path: Path) -> None:
+        lines = ["def compute(a: int) -> int:"]
+        for i in range(600):
+            lines.append(f"    x = x + {i}")
+        (tmp_path / "big.py").write_text("\n".join(lines), encoding="utf-8")
+        async with _server(tmp_path) as (session, _):
+            result = await session.call_tool("school_read", {"path": "big.py"})
+            assert not result.is_error
+            data = json.loads(result.content[0].text)
+            assert data["skeletonized"] is True
+            assert "[school ctx:" in data["content"]
+
+    async def test_unknown_path_is_error(self, tmp_path: Path) -> None:
+        async with _server(tmp_path) as (session, _):
+            result = await session.call_tool("school_read", {"path": "missing.txt"})
+            assert result.is_error
+            data = json.loads(result.content[0].text)
+            assert data["error"]["type"] == "not_found"
+
+    async def test_grep_finds_def(self, tmp_path: Path) -> None:
+        (tmp_path / "a.py").write_text(
+            "def alpha():\n    pass\n", encoding="utf-8"
+        )
+        async with _server(tmp_path) as (session, _):
+            result = await session.call_tool("school_grep", {"pattern": "^def "})
+            assert not result.is_error
+            data = json.loads(result.content[0].text)
+            assert data["matches"] == 1
+            assert "a.py:1:def alpha():" in data["content"]

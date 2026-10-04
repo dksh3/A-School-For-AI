@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -25,6 +26,8 @@ EXPECTED_TOOL_ORDER = [
     "school_diagnose",
     "school_route",
     "school_route_stats",
+    "school_read",
+    "school_grep",
 ]
 
 
@@ -446,6 +449,8 @@ class TestRoutingGuidance:
             "school_conflict",
             "school_diagnose",
             "school_route_stats",
+            "school_read",
+            "school_grep",
         }
         for name in read_only:
             assert tools[name].annotations.idempotent_hint is True, name
@@ -455,7 +460,10 @@ class TestRoutingGuidance:
 
         from school.plugin_source import TS_PLUGIN_SOURCE
 
+        MCP_ONLY_TOOLS = frozenset({"school_read", "school_grep"})
         for name, spec in mcp_server._TOOLS.items():
+            if name in MCP_ONLY_TOOLS:
+                continue
             match = re.search(
                 rf"{re.escape(name)}: tool\(.*?description:\s*\n(.*?),\n\s*args:",
                 TS_PLUGIN_SOURCE,
@@ -464,6 +472,18 @@ class TestRoutingGuidance:
             assert match, f"no TS description block for {name}"
             ts_desc = "".join(re.findall(r'"([^"]*)"', match.group(1)))
             assert ts_desc == spec["description"], name
+
+    def test_mcp_only_tools_have_no_plugin_block(self):
+        from school.plugin_source import TS_PLUGIN_SOURCE
+
+        plugin_tools = set(
+            re.findall(r"^\s+(school_\w+): tool\(", TS_PLUGIN_SOURCE, re.M)
+        )
+        assert set(mcp_server._TOOLS) - plugin_tools == {
+            "school_read",
+            "school_grep",
+        }
+        assert plugin_tools - set(mcp_server._TOOLS) == set()
 
 
 class TestRouteToolsMCP:
@@ -545,3 +565,138 @@ class TestRouteToolsMCP:
         with pytest.raises(ValueError):
             _call_tool(str(tmp_path), "school_route",
                        {"mode": "assess", "situation": "x"})
+
+
+class TestReadToolMCP:
+    def test_small_file_raw(self, tmp_path):
+        f = tmp_path / "small.txt"
+        f.write_text("hello world\nsecond line\n", encoding="utf-8")
+        result = mcp_server._call_tool(str(tmp_path), "school_read", {"path": "small.txt"})
+        data = json.loads(result.content[0].text)
+        assert result.is_error is False
+        assert data["ok"] is True
+        assert data["skeletonized"] is False
+        assert data["content"] == "hello world\nsecond line"
+        assert "school ctx" not in data["content"]
+
+    def test_oversized_python_skeletonized(self, tmp_path):
+        lines = ["def compute(a: int) -> int:"]
+        for i in range(600):
+            lines.append(f"    x = x + {i}")
+        f = tmp_path / "big.py"
+        f.write_text("\n".join(lines), encoding="utf-8")
+        result = mcp_server._call_tool(str(tmp_path), "school_read", {"path": "big.py"})
+        data = json.loads(result.content[0].text)
+        assert data["ok"] is True
+        assert data["skeletonized"] is True
+        assert data["tokens_in"] >= 1000
+        assert data["tokens_out"] < data["tokens_in"]
+        assert "def compute(" in data["content"]
+        assert re.search(r"\[school ctx: \d+→\d+ tokens\]\s*$", data["content"])
+
+    def test_offset_limit_raw_window(self, tmp_path):
+        f = tmp_path / "lines.txt"
+        f.write_text("\n".join(f"line {i}" for i in range(1, 21)), encoding="utf-8")
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_read", {"path": "lines.txt", "offset": 1, "limit": 3}
+        )
+        data = json.loads(result.content[0].text)
+        assert data["skeletonized"] is False
+        assert data["content"] == "line 1\nline 2\nline 3"
+
+    def test_missing_path_validation(self, tmp_path):
+        result = mcp_server._call_tool(str(tmp_path), "school_read", {})
+        data = json.loads(result.content[0].text)
+        assert result.is_error is True
+        assert data["error"]["type"] == "validation"
+
+    def test_not_found(self, tmp_path):
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_read", {"path": "nope.txt"}
+        )
+        data = json.loads(result.content[0].text)
+        assert result.is_error is True
+        assert data["error"]["type"] == "not_found"
+
+    def test_directory_validation(self, tmp_path):
+        (tmp_path / "adir").mkdir()
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_read", {"path": "adir"}
+        )
+        data = json.loads(result.content[0].text)
+        assert result.is_error is True
+        assert data["error"]["type"] == "validation"
+
+    def test_binary_io_error(self, tmp_path):
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\x00\x01\x02abc")
+        result = mcp_server._call_tool(str(tmp_path), "school_read", {"path": "blob.bin"})
+        data = json.loads(result.content[0].text)
+        assert result.is_error is True
+        assert data["error"]["type"] == "io"
+
+
+class TestGrepToolMCP:
+    def test_finds_matches(self, tmp_path):
+        (tmp_path / "a.py").write_text(
+            "def alpha():\n    pass\n\ndef beta():\n    pass\n", encoding="utf-8"
+        )
+        (tmp_path / "b.py").write_text(
+            "def gamma():\n    pass\n", encoding="utf-8"
+        )
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_grep", {"pattern": "^def "}
+        )
+        data = json.loads(result.content[0].text)
+        assert data["ok"] is True
+        assert data["matches"] == 3
+        assert data["truncated"] is False
+        assert "a.py:1:def alpha():" in data["content"]
+        assert data["skeletonized"] is False
+
+    def test_limit_truncates(self, tmp_path):
+        (tmp_path / "a.py").write_text(
+            "\n".join(f"def f{i}():" for i in range(20)), encoding="utf-8"
+        )
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_grep", {"pattern": "^def ", "limit": 1}
+        )
+        data = json.loads(result.content[0].text)
+        assert data["matches"] == 1
+        assert data["truncated"] is True
+
+    def test_invalid_regex_validation(self, tmp_path):
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_grep", {"pattern": "["}
+        )
+        data = json.loads(result.content[0].text)
+        assert result.is_error is True
+        assert data["error"]["type"] == "validation"
+
+    def test_unknown_path_not_found(self, tmp_path):
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_grep",
+            {"pattern": "x", "path": "missing_dir"},
+        )
+        data = json.loads(result.content[0].text)
+        assert result.is_error is True
+        assert data["error"]["type"] == "not_found"
+
+    def test_oversized_matches_elided(self, tmp_path):
+        (tmp_path / "c.txt").write_text(
+            "\n".join(
+                f"match_token {i} padding padding" for i in range(150)
+            ),
+            encoding="utf-8",
+        )
+        result = mcp_server._call_tool(
+            str(tmp_path), "school_grep",
+            {"pattern": "match_token", "limit": 500},
+        )
+        data = json.loads(result.content[0].text)
+        assert data["matches"] == 150
+        assert data["skeletonized"] is True
+        assert "[school ctx:" in data["content"]
+        assert "more matches in" in data["content"]
+        kept = [ln for ln in data["content"].splitlines() if ln.startswith("c.txt:")]
+        assert len(kept) == 10
