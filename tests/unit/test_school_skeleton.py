@@ -216,6 +216,17 @@ def transform(rows):
         assert "license banner" in out
         assert "import os" in out
 
+    def test_single_line_license_dropped_silently(self):
+        text = (
+            "# Copyright (c) 2026 X\n"
+            "import os\n"
+            "print(os.getcwd())\n"
+        )
+        out = heuristic_skeleton(text, filename="lic1.py")
+        assert "Copyright" not in out
+        assert "license banner" not in out
+        assert "import os" in out
+
     def test_unreferenced_import_dropped(self):
         text = (
             "import os\n"

@@ -305,9 +305,10 @@ def heuristic_skeleton(text: str, filename: str = "") -> str:
             if any(LICENSE_RE.search(c) for c in block):
                 for j in range(start, i):
                     drop[j] = True
-                comment_markers[start] = (
-                    f"{prefix} … license banner — {i - start} lines"
-                )
+                if i - start >= 2:
+                    comment_markers[start] = (
+                        f"{prefix} … license banner — {i - start} lines"
+                    )
             else:
                 keep = 0
                 for j in range(start, i):
