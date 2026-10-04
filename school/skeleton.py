@@ -8,6 +8,7 @@ fails open: original text, no footer.
 
 from __future__ import annotations
 
+import importlib
 import math
 import os
 import re
@@ -161,9 +162,454 @@ def _passthrough(text: str, tokens_in: int, original: str) -> OptimizeResult:
     )
 
 
-def skeletonize_ast(text: str, language: str) -> str | None:
-    """AST skeleton; returns None when unavailable or in doubt (Task 2)."""
+_AST_PACKAGES: dict[str, tuple[str, str]] = {
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "go": ("tree_sitter_go", "language"),
+    "rust": ("tree_sitter_rust", "language"),
+    "java": ("tree_sitter_java", "language"),
+    "c": ("tree_sitter_c", "language"),
+    "cpp": ("tree_sitter_cpp", "language"),
+}
+_LANGUAGE_CACHE: dict[str, object] = {}
+
+_COMMENT_TYPES = {
+    "python": {"comment"},
+    "javascript": {"comment"},
+    "typescript": {"comment"},
+    "go": {"comment"},
+    "rust": {"line_comment", "block_comment"},
+    "java": {"line_comment", "block_comment"},
+    "c": {"comment"},
+    "cpp": {"comment"},
+}
+_IMPORT_TYPES = {
+    "python": {"import_statement", "import_from_statement", "package_clause"},
+    "javascript": {"import_statement"},
+    "typescript": {"import_statement"},
+    "go": {"import_declaration", "package_clause"},
+    "rust": {"use_declaration"},
+    "java": {"import_declaration", "package_declaration"},
+    "c": {"preproc_include", "preproc_def"},
+    "cpp": {"preproc_include", "preproc_def"},
+}
+_DECL_TYPES = {
+    "python": {"function_definition", "class_definition", "decorated_definition"},
+    "javascript": {
+        "function_declaration", "generator_function_declaration",
+        "class_declaration", "method_definition",
+        "interface_declaration", "type_alias_declaration", "enum_declaration",
+        "export_statement",
+    },
+    "typescript": {
+        "function_declaration", "generator_function_declaration",
+        "class_declaration", "method_definition",
+        "interface_declaration", "type_alias_declaration", "enum_declaration",
+        "export_statement",
+    },
+    "go": {"function_declaration", "method_declaration", "type_declaration"},
+    "rust": {
+        "function_item", "struct_item", "enum_item", "trait_item",
+        "impl_item", "mod_item", "const_item", "static_item",
+    },
+    "java": {
+        "class_declaration", "interface_declaration", "enum_declaration",
+        "method_declaration", "constructor_declaration", "record_declaration",
+    },
+    "c": {"function_definition", "struct_specifier", "union_specifier", "type_definition"},
+    "cpp": {
+        "function_definition", "struct_specifier", "class_specifier",
+        "union_specifier", "type_definition",
+    },
+}
+_CTRL_TYPES = {
+    "python": {
+        "if_statement", "for_statement", "while_statement", "try_statement",
+        "return_statement", "raise_statement", "match_statement",
+        "with_statement", "elif_clause", "else_clause", "except_clause",
+        "finally_clause", "assert_statement", "break_statement",
+        "continue_statement",
+    },
+    "javascript": {
+        "if_statement", "for_statement", "for_in_statement", "while_statement",
+        "do_statement", "switch_statement", "try_statement", "return_statement",
+        "throw_statement", "switch_case", "switch_default", "break_statement",
+        "continue_statement",
+    },
+    "typescript": {
+        "if_statement", "for_statement", "for_in_statement", "while_statement",
+        "do_statement", "switch_statement", "try_statement", "return_statement",
+        "throw_statement", "switch_case", "switch_default", "break_statement",
+        "continue_statement",
+    },
+    "go": {
+        "if_statement", "for_statement", "return_statement",
+        "switch_statement", "select_statement", "case_clause",
+    },
+    "rust": {
+        "if_expression", "for_expression", "while_expression",
+        "loop_expression", "match_expression", "return_expression",
+        "arm", "break_expression", "continue_expression",
+    },
+    "java": {
+        "if_statement", "for_statement", "while_statement", "do_statement",
+        "switch_statement", "try_statement", "return_statement",
+        "throw_statement", "switch_block_statement_group", "switch_label",
+        "break_statement", "continue_statement",
+    },
+    "c": {
+        "if_statement", "for_statement", "while_statement", "do_statement",
+        "switch_statement", "return_statement", "case_statement",
+        "break_statement", "continue_statement",
+    },
+    "cpp": {
+        "if_statement", "for_statement", "for_range_loop", "while_statement",
+        "do_statement", "switch_statement", "return_statement",
+        "case_statement", "break_statement", "continue_statement",
+    },
+}
+_BODY_TYPES = {
+    "python": {"block"},
+    "javascript": {"statement_block", "class_body"},
+    "typescript": {"statement_block", "class_body", "object_type", "interface_body"},
+    "go": {"block", "statement_list", "declaration_list", "field_declaration_list"},
+    "rust": {
+        "block", "declaration_list", "field_declaration_list",
+        "enum_variant_list", "ordered_field_declaration_list",
+    },
+    "java": {
+        "class_body", "block", "constructor_body", "enum_body",
+        "interface_body", "record_body",
+    },
+    "c": {"compound_statement", "field_declaration_list"},
+    "cpp": {"compound_statement", "field_declaration_list"},
+}
+_KEEP_WHOLE_TYPES = {
+    "python": set(),
+    "javascript": {"field_definition"},
+    "typescript": {"field_definition", "public_field_definition", "method_signature"},
+    "go": {"field_declaration"},
+    "rust": {"field_declaration", "enum_variant"},
+    "java": {"field_declaration", "constant_declaration", "enum_constant"},
+    "c": {"field_declaration"},
+    "cpp": {"field_declaration"},
+}
+_LABEL_TYPES = {
+    "switch_case", "switch_default", "case_statement", "switch_label",
+    "switch_block_statement_group", "arm",
+}
+_IDENT_TYPES = {
+    "identifier", "type_identifier", "field_identifier",
+    "property_identifier", "name",
+}
+_SKIP_DEEP = {
+    "decorator", "identifier", "type_identifier", "property_identifier",
+    "field_identifier", "comment", "line_comment", "block_comment",
+    "primitive_type", "type", "parameters", "formal_parameters",
+    "type_parameters", "arguments", "argument_list", "parameter_list",
+    "modifiers",
+}
+_PUNCT_TYPES = frozenset({",", ";"})
+
+_CUR_LANG: list[str] = ["python"]
+
+
+def _load_language(name: str) -> object | None:
+    if name in _LANGUAGE_CACHE:
+        return _LANGUAGE_CACHE[name]
+    entry = _AST_PACKAGES.get(name)
+    if entry is None:
+        return None
+    pkg, factory = entry
+    try:
+        from tree_sitter import Language
+
+        mod = importlib.import_module(pkg)
+        lang = Language(getattr(mod, factory)())
+    except Exception:
+        lang = None
+    _LANGUAGE_CACHE[name] = lang
+    return lang
+
+
+def _first_ident(node: object) -> str | None:
+    for child in node.children:
+        if child.type in _IDENT_TYPES:
+            return child.text.decode("utf-8", "replace")
+    for child in node.children:
+        found = _first_ident(child)
+        if found:
+            return found
     return None
+
+
+def _decl_name(node: object) -> str:
+    if node.type == "decorated_definition":
+        for child in node.children:
+            if child.type != "decorator":
+                return _decl_name(child)
+        return "body"
+    named = node.child_by_field_name("name")
+    if named is not None:
+        ident = _first_ident(named)
+        if ident:
+            if re.search(r"function|method|constructor", node.type):
+                return f"{ident}()"
+            return ident
+    ident = _first_ident(node)
+    if ident and re.search(r"function|method|constructor", node.type):
+        return f"{ident}()"
+    if ident:
+        return ident
+    return "body"
+
+
+def _find_body(node: object, depth: int = 0) -> object | None:
+    if depth > 5:
+        return None
+    for child in node.children:
+        if child.type in _BODY_TYPES[_CUR_LANG[0]]:
+            return child
+    for child in node.children:
+        if child.type in _SKIP_DEEP:
+            continue
+        found = _find_body(child, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def skeletonize_ast(text: str, language: str) -> str | None:
+    """AST skeleton via tree-sitter; None = unavailable or parse doubt."""
+    try:
+        lang = _load_language(language)
+        if lang is None:
+            return None
+        from tree_sitter import Parser
+
+        src = text.encode("utf-8")
+        parser = Parser(lang)
+        tree = parser.parse(src)
+        root = tree.root_node
+        if root.has_error:
+            return None
+        _CUR_LANG[0] = language
+        parts: list[str] = []
+        ctx = {"src": src, "parts": parts, "lang": language}
+        _walk_children(ctx, list(root.children), None)
+        return _finalize(parts)
+    except Exception:
+        return None
+
+
+def _emit(ctx: dict, start: int, end: int, indent_first: int = -1) -> None:
+    chunk = ctx["src"][start:end].decode("utf-8", "replace")
+    lines = chunk.splitlines()
+    if not lines:
+        return
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if indent_first > 0 and lines:
+        lines[0] = " " * indent_first + lines[0].lstrip()
+    ctx["parts"].extend(lines)
+
+
+def _emit_marker(ctx: dict, label: str, n: int) -> None:
+    prefix = "#" if ctx["lang"] == "python" else "//"
+    ctx["parts"].append(f"{prefix} … {label} — {n} lines")
+
+
+def _finalize(parts: list[str]) -> str:
+    out: list[str] = []
+    pending_blank = False
+    for line in parts:
+        if not line.strip():
+            pending_blank = True
+            continue
+        if pending_blank and out:
+            out.append("")
+        pending_blank = False
+        out.append(line)
+    while out and not out[-1].strip():
+        out.pop()
+    return "\n".join(out)
+
+
+def _is_string_like(node: object) -> bool:
+    if "string" in node.type:
+        return True
+    return bool(node.children) and "string" in node.children[0].type
+
+
+def _header_end(ctx: dict, node: object, body: object) -> int:
+    header_end = body.start_byte
+    prev = header_end > node.start_byte and ctx["src"][header_end - 1:header_end] == b"{"
+    at = ctx["src"][header_end:header_end + 1] == b"{"
+    if prev or at:
+        header_end += 1
+    return header_end
+
+
+def _emit_closer(ctx: dict, body: object) -> None:
+    if body.end_byte <= body.start_byte:
+        return
+    if ctx["src"][body.end_byte - 1:body.end_byte] != b"}":
+        return
+    close_start = ctx["src"].rfind(b"\n", body.start_byte, body.end_byte - 1)
+    if close_start == -1:
+        close_start = body.end_byte - 1
+    _emit(ctx, close_start + 1, body.end_byte)
+
+
+def _walk_children(ctx: dict, children: list, label: str | None) -> str | None:
+    lang = ctx["lang"]
+    imports = _IMPORT_TYPES[lang]
+    decls = _DECL_TYPES[lang]
+    ctrls = _CTRL_TYPES[lang]
+    bodies = _BODY_TYPES[lang]
+    keep_whole = _KEEP_WHOLE_TYPES[lang]
+    comments = _COMMENT_TYPES[lang]
+    run: list = []
+    seen_code = False
+
+    def flush(end: int | None = None) -> None:
+        if not run:
+            return
+        stop = run[-1].end_byte if end is None else end
+        span = ctx["src"][run[0].start_byte:stop].count(b"\n") + 1
+        if span >= 2:
+            _emit_marker(ctx, label or "body", span)
+        else:
+            _emit(ctx, run[0].start_byte, run[-1].end_byte)
+        run.clear()
+
+    for child in children:
+        if not child.is_named:
+            if child.type in _PUNCT_TYPES and ctx["parts"]:
+                punct = ctx["src"][child.start_byte:child.end_byte]
+                ctx["parts"][-1] += punct.decode("utf-8", "replace")
+            continue
+        if child.type in comments:
+            flush()
+            continue
+        if not seen_code and _is_string_like(child):
+            start_line_end = child.start_byte + (
+                ctx["src"][child.start_byte:].find(b"\n") or 1
+            )
+            _emit(ctx, child.start_byte, min(start_line_end, child.end_byte))
+            tail = ctx["src"][child.start_byte:child.end_byte].count(b"\n")
+            if tail >= 2:
+                _emit_marker(ctx, "docstring", tail)
+            seen_code = True
+            continue
+        if child.type in imports or child.type in keep_whole:
+            flush()
+            _emit(ctx, child.start_byte, child.end_byte)
+            seen_code = True
+            continue
+        if child.type in decls or child.type in ctrls or child.type in bodies:
+            flush(child.end_byte if child.type in ctrls else None)
+            label = _walk(ctx, child, label)
+            seen_code = True
+            continue
+        if child.type == "ERROR":
+            flush()
+            return label
+        first_line_end = ctx["src"][child.start_byte:].find(b"\n")
+        first = (
+            ctx["src"][child.start_byte:child.start_byte + first_line_end + 1]
+            .decode("utf-8", "replace")
+        )
+        if re.match(r"^[A-Za-z_][\w.]*\s*:", first):
+            flush()
+            _emit(ctx, child.start_byte, child.end_byte)
+            seen_code = True
+            continue
+        run.append(child)
+        seen_code = True
+    flush()
+    return label
+
+
+def _walk(ctx: dict, node: object, label: str | None) -> str | None:
+    lang = ctx["lang"]
+    imports = _IMPORT_TYPES[lang]
+    decls = _DECL_TYPES[lang]
+    ctrls = _CTRL_TYPES[lang]
+    bodies = _BODY_TYPES[lang]
+    keep_whole = _KEEP_WHOLE_TYPES[lang]
+    comments = _COMMENT_TYPES[lang]
+    if node.type in comments:
+        return label
+    if node.type in imports or node.type in keep_whole:
+        _emit(ctx, node.start_byte, node.end_byte)
+        return label
+    if node.type in decls:
+        new_label = _decl_name(node)
+        body = _find_body(node)
+        if body is None:
+            _emit(ctx, node.start_byte, node.end_byte)
+            return new_label
+        header_end = _header_end(ctx, node, body)
+        _emit(ctx, node.start_byte, header_end, indent_first=node.start_point.column)
+        _walk_children(ctx, list(body.children), new_label)
+        _emit_closer(ctx, body)
+        return new_label
+    if node.type in ctrls:
+        block = None
+        for child in node.children:
+            if child.type in bodies:
+                block = child
+                break
+        if block is None:
+            if node.type in _LABEL_TYPES:
+                first_line_end = ctx["src"][node.start_byte:].find(b"\n")
+                end = (
+                    node.start_byte + first_line_end + 1
+                    if first_line_end != -1
+                    else node.end_byte
+                )
+                _emit(ctx, node.start_byte, end)
+                kids = [
+                    c for c in node.children
+                    if c.start_byte >= end
+                    and c.is_named
+                    and c.type not in comments
+                ]
+                _walk_children(ctx, kids, label)
+            else:
+                _emit(ctx, node.start_byte, node.end_byte)
+            return label
+        header_end = _header_end(ctx, node, block)
+        _emit(ctx, node.start_byte, header_end, indent_first=node.start_point.column)
+        if node.type in _LABEL_TYPES:
+            first_line_end = ctx["src"][block.start_byte:].find(b"\n")
+            rel_end = (
+                block.start_byte + first_line_end + 1
+                if first_line_end != -1
+                else block.end_byte
+            )
+            _emit(ctx, block.start_byte, rel_end)
+            kids = [
+                c for c in block.children
+                if c.start_byte >= rel_end and c.is_named and c.type not in comments
+            ]
+            _walk_children(ctx, kids, label)
+        else:
+            _walk_children(ctx, list(block.children), label)
+            _emit_closer(ctx, block)
+            remainder = (block.end_byte, node.end_byte)
+            if remainder[1] > remainder[0]:
+                _emit(ctx, remainder[0], remainder[1])
+        return label
+    if node.type in bodies:
+        _walk_children(ctx, list(node.children), label)
+        return label
+    if node.type == "ERROR":
+        return label
+    _emit(ctx, node.start_byte, node.end_byte)
+    return label
 
 
 def _classify_lines(lines: list[str]) -> list[str]:

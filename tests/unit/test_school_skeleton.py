@@ -3,6 +3,8 @@
 import re
 import time
 
+import pytest
+
 from school.skeleton import (
     CODE_EXTENSIONS,
     CTX_THRESHOLD,
@@ -307,3 +309,228 @@ class TestFilenameRouting:
         assert LANGUAGES[".tsx"] == "typescript"
         assert ".go" in CODE_EXTENSIONS
         assert ".sql" in CODE_EXTENSIONS
+
+
+PY_AST_SAMPLE = PY_SAMPLE_FOR_AST = TestHeuristicContract.PY_SAMPLE
+
+tree_sitter = pytest.importorskip("tree_sitter", reason="ctx extra not installed")
+
+GO_SAMPLE = """\
+package main
+
+import (
+\t"fmt"
+\t"os"
+)
+
+type Server struct {
+\taddr string
+\tport int
+}
+
+func NewServer(addr string) *Server {
+\tport := 8080
+\tif addr == "" {
+\t\tpanic("missing addr")
+\t}
+\tlogStart(addr)
+\treturn &Server{addr: addr, port: port}
+}
+
+func (s *Server) Addr() string {
+\treturn s.addr
+}
+"""
+
+RUST_SAMPLE = """\
+use std::net::TcpListener;
+
+pub struct Config {
+\tpub port: u16,
+}
+
+impl Config {
+\tpub fn new(port: u16) -> Self {
+\t\tlet cfg = Config { port };
+\t\tif cfg.port == 0 {
+\t\t\tpanic!("bad port");
+\t\t}
+\t\tcfg
+\t}
+}
+"""
+
+JAVA_SAMPLE = """\
+package com.example.app;
+
+import java.util.List;
+
+public class Loader {
+\tprivate final int retries;
+
+\tpublic Loader(int retries) {
+\t\tthis.retries = retries;
+\t}
+
+\tpublic int first(List<Integer> items) {
+\t\tint head = items.get(0);
+\t\tif (head < 0) {
+\t\t\tthrow new IllegalStateException("neg");
+\t\t}
+\t\ttrace(head);
+\t\tskip(head);
+\t\treturn head;
+\t}
+}
+"""
+
+C_SAMPLE = """\
+#include <stdio.h>
+#include <stdlib.h>
+
+struct Point {
+\tint x;
+\tint y;
+};
+
+int add(int a, int b) {
+\tint total = a + b;
+\tif (total > 100) {
+\t\treturn 100;
+\t}
+\treturn total;
+}
+"""
+
+JS_SAMPLE = """\
+import { readFileSync } from "node:fs";
+
+export class Loader {
+\tconstructor(opts) {
+\t\tthis.opts = opts;
+\t}
+
+\tasync load(path) {
+\t\tconst raw = readFileSync(path, "utf8");
+\t\tif (!raw) {
+\t\t\tthrow new Error("empty");
+\t\t}
+\t\tconst parsed = JSON.parse(raw);
+\t\treturn parsed;
+\t}
+}
+
+export const build = (cfg) => {
+\tconst out = {};
+\tfor (const key of cfg) {
+\t\tout[key] = 1;
+\t}
+\treturn out;
+};
+"""
+
+TS_SAMPLE = JS_SAMPLE + """
+export interface LoaderOptions {
+\tretry: number;
+\tbase: string;
+}
+"""
+
+
+def _run_ast(sample: str, language: str, package: str) -> str:
+    pytest.importorskip(package, reason=f"{package} not installed")
+    from school.skeleton import skeletonize_ast
+
+    out = skeletonize_ast(sample, language)
+    assert out is not None, f"skeletonize_ast returned None for {language}"
+    return out
+
+
+class TestAstBigSix:
+    def test_python(self):
+        out = _run_ast(PY_AST_SAMPLE, "python", "tree_sitter_python")
+        assert "import os" in out
+        assert "def fetch_user(user_id: int) -> User:" in out
+        assert '"""Fetch a user row by id."""' in out
+        assert "id: int" in out
+        assert "if row is None:" in out
+        assert "raise LookupError" in out
+        assert "row = db.query" not in out
+        assert "\u2026 transform() \u2014 3 lines" in out
+        assert "def transform(rows):" in out
+
+    def test_go(self):
+        out = _run_ast(GO_SAMPLE, "go", "tree_sitter_go")
+        assert "package main" in out
+        assert '"fmt"' in out
+        assert "type Server struct {" in out
+        assert "addr string" in out
+        assert "func NewServer(addr string) *Server {" in out
+        if "if addr ==" in out:
+            assert 'panic("missing addr")' in out
+        assert "logStart(addr)" not in out
+
+    def test_rust(self):
+        out = _run_ast(RUST_SAMPLE, "rust", "tree_sitter_rust")
+        assert "use std::net::TcpListener;" in out
+        assert "pub struct Config {" in out
+        assert "pub port: u16," in out
+        assert "impl Config {" in out
+        assert "pub fn new(port: u16) -> Self {" in out
+        assert "let cfg = Config { port };" not in out
+
+    def test_java(self):
+        out = _run_ast(JAVA_SAMPLE, "java", "tree_sitter_java")
+        assert "package com.example.app;" in out
+        assert "import java.util.List;" in out
+        assert "public class Loader {" in out
+        assert "private final int retries;" in out
+        assert "public Loader(int retries) {" in out
+        assert "public int first(List<Integer> items) {" in out
+        assert "int head = items.get(0);" not in out
+        assert "trace(head)" not in out
+
+    def test_c_and_cpp(self):
+        for language, package in (("c", "tree_sitter_c"),
+                                  ("cpp", "tree_sitter_cpp")):
+            out = _run_ast(C_SAMPLE, language, package)
+            assert "#include <stdio.h>" in out
+            assert "struct Point {" in out
+            assert "int x;" in out
+            assert "int add(int a, int b) {" in out
+            assert "int total = a + b;" not in out
+            if "if total > 100:" in out or "if (total > 100)" in out:
+                assert "return 100;" in out
+
+    def test_javascript(self):
+        out = _run_ast(JS_SAMPLE, "javascript", "tree_sitter_javascript")
+        assert 'import { readFileSync } from "node:fs";' in out
+        assert "export class Loader {" in out
+        assert "constructor(opts) {" in out
+        assert "async load(path) {" in out
+        assert "const raw = readFileSync" not in out
+
+    def test_typescript(self):
+        out = _run_ast(TS_SAMPLE, "typescript", "tree_sitter_typescript")
+        assert "export class Loader {" in out
+        assert "interface LoaderOptions" in out
+        assert "retry: number;" in out
+
+    def test_garbage_returns_none(self):
+        pytest.importorskip("tree_sitter_python")
+        from school.skeleton import skeletonize_ast
+
+        out = skeletonize_ast("def broken(:\n    ???" * 50, "python")
+        assert out is None
+
+    def test_ast_wired_into_optimize(self, monkeypatch):
+        pytest.importorskip("tree_sitter_python")
+        text = PY_AST_SAMPLE + "\n" + "\n".join(
+            f"    filler_{i} = {i}" for i in range(400)
+        )
+        if estimate_tokens(strip_footer(text)) < CTX_THRESHOLD:
+            text += "\n" + ("#" * 4)
+        monkeypatch.delenv("SCHOOL_CTX", raising=False)
+        res = optimize(text, filename="sample.py")
+        assert res.compressed is True
+        assert res.parser in {"tree-sitter-python", "heuristic"}
