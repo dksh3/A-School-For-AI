@@ -103,6 +103,8 @@ Eleven `school_*` tools, a budgeted `school://` resource set, and a
 configs, tool reference, scope rules, and security notes. The JSON bridge and the
 OpenCode plugin keep working unchanged alongside it.
 
+- [Adaptive routing](docs/routing.md) - where School tools fire, and why
+
 ## Development
 
 ```bash
