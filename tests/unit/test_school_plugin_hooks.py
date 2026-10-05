@@ -5,6 +5,7 @@ The hooks make School run and show itself on EVERY tool execution and prompt:
 - ``tool.execute.after``  — always-on visible marker + context injection
 - ``chat.message``        — prompt-time recall stash
 - ``experimental.chat.messages.transform`` — one-shot prompt context injection
+- ``experimental.text.complete`` — always-visible ``[school]`` status footer
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ EXPECTED_HOOKS = (
     "tool.execute.after",
     "chat.message",
     "experimental.chat.messages.transform",
+    "experimental.text.complete",
 )
 
 
@@ -38,9 +40,38 @@ class TestExecutionHooksRegistered:
             assert f'"{hook}"' in TS_PLUGIN_SOURCE, f"missing hook: {hook}"
 
     def test_tool_surface_unchanged(self) -> None:
-        """Hooks add visibility, not new tools."""
+        """The tool surface grew exactly once: the dashboard status tool."""
         names = re.findall(r"^\s+(school_\w+): tool\(", TS_PLUGIN_SOURCE, re.MULTILINE)
-        assert len(names) == 13, f"tool surface changed: {names}"
+        assert len(names) == 14, f"tool surface changed: {names}"
+
+
+class TestStatusFooterAndDashboard:
+    """The status footer and dashboard tool always show School state."""
+
+    def test_footer_hook_appends_marked_line(self) -> None:
+        block = _hook_block("experimental.text.complete")
+        assert "hooksEnabled()" in block
+        assert "schoolFooter()" in block
+        assert "output.text =" in block
+        assert 'includes("[school] route:")' in block
+
+    def test_footer_state_covers_all_chips(self) -> None:
+        for chip in ("route: ", "next: ", "ctx: ", "recall: ", "learn: ", "diag: "):
+            assert f'"{chip}"' in TS_PLUGIN_SOURCE, chip
+        assert "function schoolFooter()" in TS_PLUGIN_SOURCE
+        assert "function schoolStatusParts()" in TS_PLUGIN_SOURCE
+
+    def test_dashboard_tool_registered(self) -> None:
+        assert "school_dashboard: tool(" in TS_PLUGIN_SOURCE
+        assert '"School Dashboard"' in TS_PLUGIN_SOURCE
+        assert "call once per prompt" in TS_PLUGIN_SOURCE
+        assert "schoolStatusParts().join" in TS_PLUGIN_SOURCE
+
+    def test_subsystems_record_status(self) -> None:
+        assert "recordCtxSavings(" in TS_PLUGIN_SOURCE
+        assert "schoolStatus.learn" in TS_PLUGIN_SOURCE
+        assert "schoolStatus.route" in TS_PLUGIN_SOURCE
+        assert "schoolStatus.recall" in TS_PLUGIN_SOURCE
 
 
 class TestBeforeHook:

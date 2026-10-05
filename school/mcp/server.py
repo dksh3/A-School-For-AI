@@ -83,6 +83,16 @@ _TOOLS: dict[str, dict[str, Any]] = {
         "annotations": {"read_only_hint": True, "idempotent_hint": True},
         "schema": {"type": "object", "properties": {}},
     },
+    "school_dashboard": {
+        "description": (
+            "One-glance School dashboard: routing decision, next tools/skill, "
+            "context optimizer savings, learner recall, and diagnose health. "
+            "Use after every user turn - call once per prompt so the status "
+            "always shows under the execution."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {"type": "object", "properties": {}},
+    },
     "school_remember": {
         "description": (
             "Store an experience or memory in School V2.6 long-term memory; "
@@ -795,6 +805,36 @@ def _int_arg(value: object, default: int, lo: int, hi: int) -> int:
     return max(lo, min(hi, n))
 
 
+def _call_dashboard(worktree: str, arguments: dict[str, Any]) -> types.CallToolResult:
+    del arguments  # status-only tool: no arguments
+    stats = _read_stats(worktree, 20)
+    route = "–"
+    recall = "–"
+    for entry in stats.get("recent", []):
+        if entry.get("kind") == "assess" and entry.get("severity"):
+            route = f"{entry.get('severity')}/{entry.get('engage', '?')}"
+        if entry.get("kind") == "exec" and entry.get("hits") is not None:
+            recall = str(entry.get("hits"))
+    resp = _bridge_call("status", {"worktree": worktree})
+    bridge_ok = bool(resp.get("ok"))
+    engage = route.split("/", 1)[1] if "/" in route else ""
+    if engage == "both":
+        next_pick = "school_recall, school_search, school-routing"
+    elif engage == "skill":
+        next_pick = "school-routing"
+    else:
+        next_pick = "–"
+    lines = [
+        f"route: {route}",
+        f"next: {next_pick}",
+        "ctx: –",
+        f"recall: {recall}",
+        f"learn: {'ready' if bridge_ok else 'off'}",
+        f"diag: {'ok' if bridge_ok else 'off'}",
+    ]
+    return _result({"ok": True, "dashboard": lines, "text": "\n".join(lines)})
+
+
 def _call_read(worktree: str, arguments: dict) -> types.CallToolResult:
     raw = str(arguments.get("path", "") or "").strip()
     if not raw:
@@ -906,6 +946,8 @@ def _call_tool(worktree: str, name: str, arguments: dict[str, Any]) -> types.Cal
         return _call_route(worktree, arguments)
     if name == "school_route_stats":
         return _call_route_stats(worktree, arguments)
+    if name == "school_dashboard":
+        return _call_dashboard(worktree, arguments)
     if name == "school_read":
         return _call_read(worktree, arguments)
     if name == "school_grep":

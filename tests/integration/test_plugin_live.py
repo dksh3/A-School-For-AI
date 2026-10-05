@@ -40,6 +40,24 @@ export const tool = (t) => t;
 tool.schema = chain;
 """
 STUB_INDEX_JS = "export {};\n"
+
+FOOTER_HARNESS = """\
+import School from "./school.ts";
+const [worktree] = process.argv.slice(2);
+const hooks = await School({ worktree, directory: worktree });
+const output = { text: "Assistant reply." };
+const hook = hooks["experimental.text.complete"];
+await hook({ sessionID: "s", messageID: "m", partID: "p" }, output);
+const first = output.text;
+await hook({ sessionID: "s", messageID: "m", partID: "p" }, output);
+const dash = await hooks.tool.school_dashboard.execute(
+  {},
+  { worktree, sessionID: "s" },
+);
+process.stdout.write(
+  JSON.stringify({ first, second: output.text, dash: dash.output, title: dash.title }),
+);
+"""
 STUB_PKG = json.dumps(
     {
         "name": "@opencode-ai/plugin",
@@ -68,6 +86,7 @@ def plugin_dir(tmp_path: Path) -> Path:
     (stub / "index.js").write_text(STUB_INDEX_JS, encoding="utf-8")
     (stub / "tool.js").write_text(STUB_TOOL_JS, encoding="utf-8")
     (d / "harness.mjs").write_text(HARNESS, encoding="utf-8")
+    (d / "footer.mjs").write_text(FOOTER_HARNESS, encoding="utf-8")
     return d
 
 
@@ -132,3 +151,61 @@ class TestLiveContextOptimizer:
         original = big.read_text(encoding="utf-8")
         assert out["output"] == original
         assert "school ctx" not in out["output"]
+
+
+def _run_footer(plugin_dir: Path, worktree: Path, env: dict) -> dict:
+    proc = subprocess.run(
+        ["node", str(plugin_dir / "footer.mjs"), str(worktree)],
+        cwd=str(plugin_dir),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+        env=env,
+    )
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    return json.loads(proc.stdout)
+
+
+@pytest.mark.integration
+class TestLiveStatusFooter:
+    """The [school] footer and dashboard tool render on every response."""
+
+    def _env(self, tmp_path: Path) -> dict:
+        env = dict(os.environ)
+        env["SCHOOL_HOME"] = str(tmp_path / "nowhere")
+        env["PATH"] = str(tmp_path / "nopath")
+        env.pop("PYTHONPATH", None)
+        env.pop("SCHOOL_HOOKS", None)
+        return env
+
+    def test_footer_appends_and_is_idempotent(
+        self, plugin_dir: Path, tmp_path: Path
+    ):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        out = _run_footer(plugin_dir, worktree, self._env(tmp_path))
+        assert out["first"].startswith("Assistant reply.")
+        assert "\n\n[school] route:" in out["first"]
+        for chip in ("next: ", "ctx: ", "recall: ", "learn: ", "diag: "):
+            assert chip in out["first"], chip
+        assert out["second"] == out["first"]  # no double append
+
+    def test_dashboard_tool_returns_status_lines(
+        self, plugin_dir: Path, tmp_path: Path
+    ):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        out = _run_footer(plugin_dir, worktree, self._env(tmp_path))
+        assert out["title"] == "School Dashboard"
+        assert "route: " in out["dash"]
+        assert "learn: off" in out["dash"]  # no bridge in sandbox
+        assert "diag: off" in out["dash"]
+
+    def test_footer_kill_switch(self, plugin_dir: Path, tmp_path: Path):
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        env = self._env(tmp_path)
+        env["SCHOOL_HOOKS"] = "0"
+        out = _run_footer(plugin_dir, worktree, env)
+        assert out["first"] == "Assistant reply."  # untouched

@@ -151,6 +151,24 @@ class TestRouteTools:
         assert "function parseRouteDecision(" in TS_PLUGIN_SOURCE
         assert 'raw.engage === "none"' in TS_PLUGIN_SOURCE
 
+    def test_route_picks_tools_and_skills(self):
+        # The micro-model decides which tools and skills fit the situation.
+        body_match = re.search(
+            r"function routePrompt\(situation: string\): string \{\n(.*?)\n  \}",
+            TS_PLUGIN_SOURCE,
+            re.S,
+        )
+        assert body_match, "routePrompt missing"
+        body = body_match.group(1)
+        assert "up to 3 tools" in body
+        assert "up to 2 skills" in body
+        assert '"tools":["..."]' in body
+        assert '"skills":["..."]' in body
+        assert "slice(0, 3)" in TS_PLUGIN_SOURCE  # tools cap
+        assert "slice(0, 2)" in TS_PLUGIN_SOURCE  # skills cap
+        assert "defaultPicks" in TS_PLUGIN_SOURCE  # fallback engagement picks
+        assert "schoolStatus.next" in TS_PLUGIN_SOURCE  # picks surface in footer
+
     def test_kill_switch(self):
         assert 'process.env.SCHOOL_ROUTE === "0"' in TS_PLUGIN_SOURCE
 

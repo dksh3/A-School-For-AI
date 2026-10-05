@@ -35,10 +35,36 @@ Four pieces make the loop:
 
 | Piece | What it does |
 | --- | --- |
-| `school_route` (assess) | Grades the current situation; returns severity, engage, and a reason. |
+| `school_route` (assess) | Grades the current situation; returns severity, engage, reason, plus the **next tools and skills** the micro-model picked for this situation. |
 | `school_route` (report) | Stores a routing lesson as a memory (`tags: ["routing", outcome]`). |
 | `school_route_stats` | Per-tool call counts, avg_ms, recent assess/report entries, current knobs. |
+| `school_dashboard` | One-glance status: route, next picks, optimizer savings, learner, diagnose. Call once per prompt. |
 | `school-routing` skill | Gathers stats, reviews them visibly, tunes knobs, audits what changed. |
+
+## Always-visible status
+
+Two mechanisms make School show itself on **every** prompt execution:
+
+1. **Footer** — the `experimental.text.complete` hook appends one line under
+   every assistant response:
+
+   ```
+   [school] route: medium/both · next: school_recall, school_search, school-routing ·
+   ctx: -1240tok (18%) · recall: 3 · learn: ok · diag: ok
+   ```
+
+   - `route` — last `school_route` decision (`severity/engage`).
+   - `next` — tools/skills the micro-model picked for the situation (falls back
+     to engagement defaults: `skill` → the skill; `both` → recall + search + skill).
+   - `ctx` — last context-optimizer savings (`-savedtok (pct%)`).
+   - `recall` — last recall hit count; `learn` — last learner result
+     (`ready`/`ok`/`fail`/`off`); `diag` — bridge health.
+2. **`school_dashboard` tool** — the same status as a visible tool card; its
+   description tells the model to call it once per user turn. The MCP twin
+   reports what the MCP process can see (evidence tail + bridge health).
+
+Both are governed by `SCHOOL_HOOKS=0` (footer) and disappear with it; the
+dashboard tool itself stays available for on-demand checks.
 
 ## Escalation table
 

@@ -25,6 +25,7 @@ REPO_ROOT = str(Path(__file__).resolve().parent.parent.parent)
 
 EXPECTED_TOOLS = [
     "school_status",
+    "school_dashboard",
     "school_remember",
     "school_recall",
     "school_learn",
@@ -107,6 +108,15 @@ class TestRealToolCalls:
         async with _server(tmp_path) as (session, _):
             with pytest.raises(MCPError):
                 await session.call_tool("school_bogus", {})
+
+    async def test_dashboard_call(self, tmp_path: Path) -> None:
+        async with _server(tmp_path) as (session, _):
+            result = await session.call_tool("school_dashboard", {})
+            assert result.is_error is False
+            payload = json.loads(result.content[0].text)
+            assert payload["ok"] is True
+            assert "route:" in payload["text"]
+            assert "diag:" in payload["text"]
 
     async def test_missing_required_argument_is_error_result(
         self, tmp_path: Path

@@ -289,6 +289,37 @@ function strList(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x)) : []
 }
 
+const schoolStatus: Record<string, string> = {}
+
+function schoolStatusParts(): string[] {
+  return [
+    "route: " + (schoolStatus.route || "–"),
+    "next: " + (schoolStatus.next || "–"),
+    "ctx: " + (schoolStatus.ctx || "–"),
+    "recall: " + (schoolStatus.recall || "–"),
+    "learn: " + (schoolStatus.learn || "–"),
+    "diag: " + (schoolStatus.diag || "–"),
+  ]
+}
+
+function schoolFooter(): string {
+  return schoolStatusParts().join(" · ").slice(0, 240)
+}
+
+function recordCtxSavings(tokensIn: number, tokensOut: number): void {
+  const saved = tokensIn - tokensOut
+  const pct = Math.max(1, Math.round((saved / tokensIn) * 100))
+  schoolStatus.ctx = `-${saved}tok (${pct}%)`
+}
+
+function defaultPicks(engage: string): { tools: string[]; skills: string[] } {
+  if (engage === "both") {
+    return { tools: ["school_recall", "school_search"], skills: ["school-routing"] }
+  }
+  if (engage === "skill") return { tools: [], skills: ["school-routing"] }
+  return { tools: [], skills: [] }
+}
+
 let knobsCache: { mtimeMs: number; knobs: RoutingKnobs } | null = null
 
 function readKnobs(worktree: string): RoutingKnobs {
@@ -688,11 +719,25 @@ async function ctxOptimize(
           { command: "skeleton", text: body, filename },
           CTX_TIMEOUT_MS
         );
-        const r = resp as { ok?: boolean; compressed?: boolean; content?: string };
+        const r = resp as {
+          ok?: boolean
+          compressed?: boolean
+          content?: string
+          tokens_in?: number
+          tokens_out?: number
+        };
         if (r.ok) {
-          return r.compressed === true && typeof r.content === "string"
-            ? r.content
-            : null;
+          if (
+            r.compressed === true &&
+            typeof r.content === "string" &&
+            typeof r.tokens_in === "number" &&
+            typeof r.tokens_out === "number" &&
+            r.tokens_in > r.tokens_out
+          ) {
+            recordCtxSavings(r.tokens_in, r.tokens_out);
+            return r.content;
+          }
+          return null;
         }
       } catch {
         /* fall through to TS heuristic */
@@ -703,6 +748,7 @@ async function ctxOptimize(
       : ctxPayload(body);
     const tokensOut = ctxEstimate(out);
     if (tokensOut >= tokensIn) return null;
+    recordCtxSavings(tokensIn, tokensOut);
     return `${out}\n\n${ctxFooter(tokensIn, tokensOut)}`;
   } catch {
     return null;
@@ -719,6 +765,8 @@ const School: Plugin = async (ctx) => {
 
   const python = bridge?.python ?? ""
   const bridgePath = bridge?.bridgePath ?? ""
+  schoolStatus.learn = bridge ? "ready" : "off"
+  schoolStatus.diag = bridge && hooksEnabled() ? "ok" : "off"
 
   /**
    * Budgeted recall for one execution or prompt through the existing bridge.
@@ -759,7 +807,13 @@ const School: Plugin = async (ctx) => {
     }
   }
 
-  interface RouteDecision { severity: string; engage: string; reason: string }
+  interface RouteDecision {
+    severity: string
+    engage: string
+    reason: string
+    tools: string[]
+    skills: string[]
+  }
 
   function routePrompt(situation: string): string {
     return [
@@ -767,7 +821,9 @@ const School: Plugin = async (ctx) => {
       "severity: light (trivial) | medium (real task) | high (critical).",
       "engage: skill for light, both for medium/high (tool and skill together).",
       "Never choose engage none unless the situation is unrelated to tool routing.",
-      'Respond ONLY with JSON: {"severity":"...","engage":"...","reason":"..."}',
+      "Pick up to 3 tools and up to 2 skills for the NEXT step; use [] when none.",
+      'Respond ONLY with JSON: {"severity":"...","engage":"...","reason":"...",' +
+        '"tools":["..."],"skills":["..."]}',
     ].join("\n")
   }
 
@@ -783,7 +839,19 @@ const School: Plugin = async (ctx) => {
         raw.engage === "none" || raw.engage === "skill" || raw.engage === "both"
           ? String(raw.engage)
           : engageFor(severity)
-      return { severity, engage, reason: String(raw.reason ?? "").slice(0, 300) }
+      const tools = Array.isArray(raw.tools)
+        ? raw.tools.map((x) => String(x)).filter((x) => x.length > 0 && x.length <= 40).slice(0, 3)
+        : []
+      const skills = Array.isArray(raw.skills)
+        ? raw.skills.map((x) => String(x)).filter((x) => x.length > 0 && x.length <= 40).slice(0, 2)
+        : []
+      return {
+        severity,
+        engage,
+        reason: String(raw.reason ?? "").slice(0, 300),
+        tools,
+        skills,
+      }
     } catch {
       return null
     }
@@ -901,6 +969,21 @@ const School: Plugin = async (ctx) => {
         },
       }),
 
+      school_dashboard: tool({
+        description:
+          "One-glance School dashboard: routing decision, next tools/skill, " +
+          "context optimizer savings, learner recall, and diagnose health. " +
+          "Use after every user turn - call once per prompt so the status " +
+          "always shows under the execution.",
+        args: {},
+        async execute(_args, _context) {
+          return {
+            title: "School Dashboard",
+            output: schoolStatusParts().join("\n"),
+          }
+        },
+      }),
+
       school_remember: tool({
         description:
           "Store an experience or memory in School V2.6 long-term memory; " +
@@ -958,6 +1041,7 @@ const School: Plugin = async (ctx) => {
 
           if (!resp.ok) {
             const err = (resp as any).error ?? {}
+            schoolStatus.learn = "fail"
             return {
               title: "School Remember — Failed",
               output: `Error [${err.type}]: ${err.message}`,
@@ -973,6 +1057,7 @@ const School: Plugin = async (ctx) => {
             .filter(Boolean)
             .join(", ")
 
+          schoolStatus.learn = "ok"
           return {
             title: "School Remember",
             output: [
@@ -1166,6 +1251,7 @@ const School: Plugin = async (ctx) => {
             const err = (resp as any).error ?? {}
             const errors = (resp as any).errors ?? []
             const detail = err.message ?? errors.join("; ") ?? "unknown error"
+            schoolStatus.learn = "fail"
             return {
               title: "School Learn — Failed",
               output: `Error [${err.type ?? "orchestrator"}]: ${detail}`,
@@ -1173,6 +1259,7 @@ const School: Plugin = async (ctx) => {
           }
 
           const result = (resp as any).result ?? resp
+          schoolStatus.learn = "ok"
           return {
             title: "School Learn",
             output: [
@@ -1575,12 +1662,16 @@ const School: Plugin = async (ctx) => {
           let source = "micro-model"
           if (!decision) {
             const severity = normalizeSeverity(args.severity)
+            const engage = engageFor(severity)
+            const fallbackPicks = defaultPicks(engage)
             decision = {
               severity,
-              engage: engageFor(severity),
+              engage,
               reason: args.severity
                 ? "self-rated (severity argument)"
                 : "fallback default (micro-call unavailable)",
+              tools: fallbackPicks.tools,
+              skills: fallbackPicks.skills,
             }
             source = process.env.SCHOOL_ROUTE === "0"
               ? "self-rated"
@@ -1588,6 +1679,13 @@ const School: Plugin = async (ctx) => {
                 ? "self-rated"
                 : "fallback"
           }
+          const picks =
+            decision.tools.length > 0 || decision.skills.length > 0
+              ? { tools: decision.tools, skills: decision.skills }
+              : defaultPicks(decision.engage)
+          schoolStatus.route = `${decision.severity}/${decision.engage}`
+          schoolStatus.next =
+            [...picks.tools, ...picks.skills].join(", ") || "–"
           if (hooksEnabled()) {
             appendEvidence(context.worktree, {
               kind: "assess",
@@ -1606,7 +1704,11 @@ const School: Plugin = async (ctx) => {
           return {
             title: `School Route — ${decision.severity}`,
             output:
-              JSON.stringify({ source, ...decision }, null, 2) + nextStep,
+              JSON.stringify(
+                { source, ...decision, tools: picks.tools, skills: picks.skills },
+                null,
+                2,
+              ) + nextStep,
             metadata: { engagement: decision.engage },
           }
         },
@@ -1739,6 +1841,7 @@ const School: Plugin = async (ctx) => {
         }
         const rec = executionRecalls.get(input.callID) ?? null
         executionRecalls.delete(input.callID)
+        schoolStatus.recall = rec ? String(rec.hits) : "0"
         // Visible marker on EVERY execution — hits, zero hits, and degraded.
         const marker = rec ? ` · school: ${rec.hits}` : " · school: –"
         const started = executionStart.get(input.callID) ?? Date.now()
@@ -1746,6 +1849,7 @@ const School: Plugin = async (ctx) => {
         const meta = (output as any).metadata as Record<string, unknown> | undefined
         const engagement = meta && typeof meta.engagement === "string" ? meta.engagement : ""
         const routingSuffix = engagement ? ` · routing: ${engagement}` : ""
+        if (engagement && !schoolStatus.route) schoolStatus.route = engagement
         output.title = `${output.title || input.tool}${marker}${routingSuffix}`
         appendEvidence(ctx.worktree, {
           kind: "exec",
@@ -1776,9 +1880,21 @@ const School: Plugin = async (ctx) => {
         if (rec && rec.hits > 0) {
           capMap(promptRecalls)
           promptRecalls.set(input.sessionID, rec)
+          schoolStatus.recall = String(rec.hits)
         }
       } catch {
         // Prompt recall is best-effort.
+      }
+    },
+
+    "experimental.text.complete": async (_input, output) => {
+      try {
+        if (!hooksEnabled()) return
+        if (typeof output.text !== "string" || !output.text.trim()) return
+        if (output.text.includes("[school] route:")) return
+        output.text = `${output.text}\n\n[school] ${schoolFooter()}`
+      } catch {
+        // The status footer is visibility-only; never break the response.
       }
     },
 

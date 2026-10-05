@@ -14,6 +14,7 @@ from school.mcp import server as mcp_server
 
 EXPECTED_TOOL_ORDER = [
     "school_status",
+    "school_dashboard",
     "school_remember",
     "school_recall",
     "school_learn",
@@ -443,6 +444,7 @@ class TestRoutingGuidance:
         }
         assert read_only == {
             "school_status",
+            "school_dashboard",
             "school_recall",
             "school_search",
             "school_confidence",
