@@ -103,4 +103,4 @@ disallow_untyped_defs = true
 testpaths = ["tests"]
 asyncio_mode = "auto"
 markers = ["integration: requires external runtimes (node, live subprocess)"]
-addopts = "-v --tb=short --basetemp=.pytest_tmp"
+addopts = "-v --tb=short"

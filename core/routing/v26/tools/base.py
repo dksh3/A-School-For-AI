@@ -87,10 +87,17 @@ class ToolRegistry:
         return [{"name": t.name, "description": t.description, "schema": t.schema}
                 for t in self._tools.values()]
 
-    def execute(self, name: str, **kwargs) -> ToolResult:
-        tool = self.get(name)
+    def execute(self, tool_name: str, **kwargs) -> ToolResult:
+        # NOTE: first param is `tool_name` (not `name`) so tool keyword args
+        # may legitimately include a `name` field (e.g. skill name).
+        tool = self.get(tool_name)
         if tool is None:
-            return ToolResult(success=False, data={}, errors=[f"Unknown tool: {name}"], metadata={})
+            return ToolResult(
+                success=False,
+                data={},
+                errors=[f"Unknown tool: {tool_name}"],
+                metadata={},
+            )
         errors = tool.validate(**kwargs)
         if errors:
             return ToolResult(success=False, data={}, errors=errors, metadata={})

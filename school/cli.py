@@ -345,6 +345,180 @@ def _cmd_mcp(args: argparse.Namespace) -> None:
     mcp_main()
 
 
+def _cmd_skills(args: argparse.Namespace) -> None:
+    """1A-2Z skill commands (Phase 2: GitHub discovery is opt-in)."""
+    import json
+
+    from core.skillgen.github import discovery
+    from core.skillgen.registry import registry_for
+
+    action = getattr(args, "skills_command", None)
+    if action is None:
+        sys.stderr.write(
+            "school skills: choose list, search, github-search, discover, "
+            "analyze, compare, or import\n"
+        )
+        sys.exit(1)
+
+    keywords = [str(k) for k in (getattr(args, "keywords", None) or [])]
+    if action == "list":
+        registry = registry_for(".")
+        report = {
+            "ok": True,
+            "skills": [
+                {
+                    "name": s.name,
+                    "state": s.state.value,
+                    "scope": s.scope.value,
+                    "confidence": s.confidence,
+                    "successes": s.success_count,
+                    "failures": s.failure_count,
+                    "source": s.provenance.get("source_type", "local"),
+                }
+                for s in sorted(registry.all(), key=lambda s: s.name)
+            ],
+            "count": registry.count(),
+        }
+    elif action == "search":
+        import os
+
+        from core.skillgen.matcher import match
+
+        report = {
+            "ok": True,
+            "matches": match(
+                registry_for("."),
+                str(args.query or ""),
+                agent_id=os.environ.get("SCHOOL_AGENT", "opencode"),
+                project_id=os.environ.get("SCHOOL_PROJECT", ""),
+                session_id=os.environ.get("SCHOOL_SESSION", ""),
+                include_unusable=True,
+                limit=10,
+            ),
+        }
+    elif action == "github-search":
+        report = discovery.search_github(
+            task=str(args.task or ""),
+            capability_gap=str(args.gap or ""),
+            keywords=keywords,
+            skill_name=str(args.skill_name or ""),
+        )
+    elif action == "discover":
+        report = discovery.discover(
+            task=str(args.task or ""),
+            capability_gap=str(args.gap or ""),
+            keywords=keywords,
+            skill_name=str(args.skill_name or ""),
+            max_files=int(args.max_files),
+        )
+    elif action == "analyze":
+        report = discovery.analyze_external(
+            args.owner,
+            args.repo,
+            file_path=str(args.file_path or ""),
+            task=str(args.task or ""),
+            registry=registry_for("."),
+        )
+    elif action == "compare":
+        report = discovery.compare(
+            args.owner,
+            args.repo,
+            file_path=str(args.file_path or ""),
+            registry=registry_for("."),
+        )
+    elif action == "import":
+        report = discovery.import_external(
+            args.owner,
+            args.repo,
+            file_path=str(args.file_path or ""),
+            approve=bool(args.approve),
+            scope=str(args.scope or "agent"),
+            acknowledge_license=bool(args.acknowledge_license),
+            registry=registry_for("."),
+            agent_id=str(args.agent_id or "opencode"),
+            project_id=str(args.project or ""),
+            session_id=str(args.session or ""),
+        )
+    else:  # pragma: no cover - argparse restricts choices
+        sys.stderr.write(f"school skills: unknown action {action!r}\n")
+        sys.exit(1)
+
+    print(json.dumps(report, indent=2, default=str))
+    if not report.get("ok"):
+        sys.exit(1)
+
+
+def _read_messages() -> list[dict]:
+    """Read a JSON array of messages from stdin (empty when unavailable)."""
+    import json
+
+    try:
+        if sys.stdin is None or sys.stdin.isatty():
+            return []
+        data = json.load(sys.stdin)
+    except (ValueError, OSError):
+        return []
+    return data if isinstance(data, list) else []
+
+
+def _cmd_context(args: argparse.Namespace) -> None:
+    """school context: status | compress | restore | switch | keep."""
+    import json
+
+    from school import bridge
+
+    action = args.context_command
+    if action is None:
+        print("school context: missing subcommand", file=sys.stderr)
+        sys.exit(2)
+
+    worktree = args.worktree or str(Path.cwd())
+    command = "context_status"
+    req: dict = {"worktree": worktree}
+    if args.session:
+        req["session"] = args.session
+    if action == "compress":
+        command = "context_compress"
+        req["messages"] = _read_messages()
+    elif action == "restore":
+        command = "context_restore"
+        req["block_id"] = args.block_id or ""
+    elif action in ("switch", "keep"):
+        command = "context_coexist"
+        req["action"] = "set_decision"
+        req["decision"] = action
+
+    handler = bridge._COMMANDS.get(command)
+    if handler is None:
+        resp = {
+            "ok": False,
+            "error": {"type": "protocol", "message": f"unknown: {command}"},
+        }
+    else:
+        resp = handler(req)
+
+    if args.json:
+        print(json.dumps(resp, ensure_ascii=False))
+    elif action == "status":
+        print(f"mode: {resp.get('mode', '?')}")
+        print(f"decision: {resp.get('decision') or '-'}")
+        blocks = resp.get("blocks", 0)
+        restores = resp.get("restores", 0)
+        print(f"blocks: {blocks}  restores: {restores}")
+        if resp.get("chip"):
+            print(resp["chip"])
+        if resp.get("dcp") and not resp.get("decision"):
+            from core.context.coexist import OFFER_TEXT
+
+            print(OFFER_TEXT)
+    else:
+        print(f"ok: {resp.get('ok')}  mode: {resp.get('mode', '')}")
+        if resp.get("chip"):
+            print(resp["chip"])
+    if not resp.get("ok"):
+        sys.exit(1)
+
+
 def main() -> None:
     """Main CLI entry point."""
     parser = argparse.ArgumentParser(
@@ -375,6 +549,127 @@ def main() -> None:
         help="MCP client preset (claude, codex, opencode, cursor, ...)",
     )
 
+    skills_parser = subparsers.add_parser(
+        "skills",
+        help="1A-2Z skill management (Phase 2: GitHub discovery is opt-in)",
+    )
+    skills_subparsers = skills_parser.add_subparsers(dest="skills_command")
+
+    skills_subparsers.add_parser("list", help="List local 1A-2Z skills (offline)")
+
+    skills_search_parser = skills_subparsers.add_parser(
+        "search", help="Search local 1A-2Z skills (offline)"
+    )
+    skills_search_parser.add_argument("query", help="Capability query")
+
+    def _add_gap_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--task", default="", help="Current task driving the gap")
+        p.add_argument(
+            "--gap", default="", help="Capability gap to search for (preferred)"
+        )
+        p.add_argument(
+            "--keywords", nargs="*", default=[], help="Focused keywords (no conversation)"
+        )
+        p.add_argument("--skill-name", default="", help="Known skill name to match")
+
+    github_search_parser = skills_subparsers.add_parser(
+        "github-search", help="Bounded GitHub repository search (read-only)"
+    )
+    _add_gap_args(github_search_parser)
+
+    discover_parser = skills_subparsers.add_parser(
+        "discover",
+        help="Discover skill-like files in GitHub results (read-only, no clone)",
+    )
+    _add_gap_args(discover_parser)
+    discover_parser.add_argument(
+        "--max-files", type=int, default=5, help="Max files retrieved per discovery"
+    )
+
+    def _add_repo_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--owner", required=True, help="Repository owner")
+        p.add_argument("--repo", required=True, help="Repository name")
+        p.add_argument("--file-path", default="", help="Specific skill file path")
+
+    analyze_parser = skills_subparsers.add_parser(
+        "analyze", help="Budgeted model analysis of one GitHub candidate"
+    )
+    _add_repo_args(analyze_parser)
+    analyze_parser.add_argument("--task", default="", help="Capability gap context")
+
+    compare_parser = skills_subparsers.add_parser(
+        "compare", help="Compare a GitHub candidate against local skills"
+    )
+    _add_repo_args(compare_parser)
+
+    import_parser = skills_subparsers.add_parser(
+        "import",
+        help="Import an approved GitHub candidate (requires --approve)",
+    )
+    _add_repo_args(import_parser)
+    import_parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="Explicit user approval (required to import)",
+    )
+    import_parser.add_argument(
+        "--acknowledge-license",
+        action="store_true",
+        help="Acknowledge UNKNOWN-license review before import",
+    )
+    import_parser.add_argument(
+        "--scope",
+        default="agent",
+        choices=["global", "agent", "project", "session"],
+        help="Import scope (default agent; never automatic global)",
+    )
+    import_parser.add_argument("--agent-id", default="opencode", help="Agent identity")
+    import_parser.add_argument("--project", default="", help="Project id")
+    import_parser.add_argument("--session", default="", help="Session id")
+
+    context_common = argparse.ArgumentParser(add_help=False)
+    context_common.add_argument(
+        "--json", action="store_true", help="Print the raw bridge JSON response"
+    )
+    context_common.add_argument("--session", default="", help="Session id")
+    context_common.add_argument(
+        "--worktree", default="", help="Worktree root (default: current directory)"
+    )
+
+    context_parser = subparsers.add_parser(
+        "context",
+        help="Context engine: status, compress, restore, switch, keep",
+    )
+    context_subparsers = context_parser.add_subparsers(dest="context_command")
+    context_subparsers.add_parser(
+        "status",
+        parents=[context_common],
+        help="Blocks, view mode, chip, DCP offer",
+    )
+    context_subparsers.add_parser(
+        "compress",
+        parents=[context_common],
+        help="Compress messages read as a JSON array from stdin",
+    )
+    restore_parser = context_subparsers.add_parser(
+        "restore",
+        parents=[context_common],
+        help="Restore blocks by id (default: latest)",
+    )
+    restore_parser.add_argument(
+        "block_id", nargs="?", default="", help="Block id to restore"
+    )
+    context_subparsers.add_parser(
+        "switch",
+        parents=[context_common],
+        help="School owns compression from now on (clean break)",
+    )
+    context_subparsers.add_parser(
+        "keep",
+        parents=[context_common],
+        help="Keep DCP for message-level compression",
+    )
+
     args = parser.parse_args()
 
     if args.command is None:
@@ -394,6 +689,8 @@ def main() -> None:
         "doctor": _cmd_doctor,
         "uninstall": _cmd_uninstall,
         "mcp": _cmd_mcp,
+        "skills": _cmd_skills,
+        "context": _cmd_context,
     }
 
     cmd_func = commands.get(args.command)

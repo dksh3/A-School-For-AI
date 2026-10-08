@@ -1,4 +1,4 @@
-"""Tests for School plugin source and bridge protocol."""
+﻿"""Tests for School plugin source and bridge protocol."""
 
 from __future__ import annotations
 
@@ -6,6 +6,8 @@ import json
 import re
 from io import StringIO
 from unittest.mock import patch
+
+import pytest
 
 from school.plugin_source import TS_PLUGIN_SOURCE
 
@@ -25,6 +27,29 @@ EXPECTED_OPENCODE_TOOLS = [
     "school_diagnose",
     "school_route",
     "school_route_stats",
+    "school_skill_list",
+    "school_skill_search",
+    "school_skill_create",
+    "school_skill_use",
+    "school_skill_feedback",
+    "school_skill_status",
+    "school_skill_evolve",
+    "school_skill_search_github",
+    "school_skill_discover",
+    "school_skill_analyze_external",
+    "school_skill_compare",
+    "school_skill_import",
+    "school_context_status",
+    "school_context_compress",
+    "school_context_restore",
+    "school_observe",
+    "school_goal",
+    "school_research",
+    "school_explore",
+    "school_progress",
+    "school_session",
+    "school_execute",
+    "school_navigate",
 ]
 
 
@@ -171,11 +196,11 @@ class TestBridgeProtocol:
 
 
 class TestPluginToolSurface:
-    """The plugin must expose exactly the approved 14-tool surface."""
+    """The plugin must expose exactly the approved 29-tool surface."""
 
-    def test_exposes_exactly_14_tools(self) -> None:
+    def test_exposes_exactly_29_tools(self) -> None:
         names = _tool_names()
-        assert len(names) == 14, f"expected 14 tools, got {len(names)}: {names}"
+        assert len(names) == 37, f"expected 37 tools, got {len(names)}: {names}"
         assert set(names) == set(EXPECTED_OPENCODE_TOOLS)
 
     def test_tool_order_matches_approved_surface(self) -> None:
@@ -452,3 +477,39 @@ class TestSkeletonCommand:
         assert output["ok"] is True
         assert output["compressed"] is True
         assert "[school ctx:" in output["content"]
+
+
+class TestContextToolsTS:
+    """The three context tools on the OpenCode plugin surface (S2)."""
+
+    def test_status_sends_context_status(self) -> None:
+        block = _tool_block("school_context_status")
+        assert 'command: "context_status"' in block
+        assert "School Context Status" in block
+        assert "if (!bridge)" in block
+
+    def test_compress_sends_context_compress(self) -> None:
+        block = _tool_block("school_context_compress")
+        assert 'command: "context_compress"' in block
+        assert "messages: args.messages ?? []" in block
+
+    def test_restore_sends_context_restore(self) -> None:
+        block = _tool_block("school_context_restore")
+        assert 'command: "context_restore"' in block
+        assert 'block_id: args.block_id ?? ""' in block
+
+    def test_context_descriptions_match_mcp(self) -> None:
+        mcp_server = pytest.importorskip(
+            "school.mcp.server", reason="mcp package not installed"
+        )
+
+        for name in (
+            "school_context_status",
+            "school_context_compress",
+            "school_context_restore",
+        ):
+            block = _tool_block(name)
+            match = re.search(r"description:\s*\n(.*?),\n\s*args:", block, re.S)
+            assert match, name
+            ts_desc = "".join(re.findall(r'"([^"]*)"', match.group(1)))
+            assert ts_desc == mcp_server._TOOLS[name]["description"], name

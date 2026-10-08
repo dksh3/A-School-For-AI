@@ -6,6 +6,7 @@ The hooks make School run and show itself on EVERY tool execution and prompt:
 - ``chat.message``        — prompt-time recall stash
 - ``experimental.chat.messages.transform`` — one-shot prompt context injection
 - ``experimental.text.complete`` — always-visible ``[school]`` status footer
+- ``experimental.session.compacting`` - budget-pressure nudge during auto-compaction
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ EXPECTED_HOOKS = (
     "chat.message",
     "experimental.chat.messages.transform",
     "experimental.text.complete",
+    "experimental.session.compacting",
 )
 
 
@@ -40,9 +42,9 @@ class TestExecutionHooksRegistered:
             assert f'"{hook}"' in TS_PLUGIN_SOURCE, f"missing hook: {hook}"
 
     def test_tool_surface_unchanged(self) -> None:
-        """The tool surface grew exactly once: the dashboard status tool."""
+        """The tool surface: 26 approved tools + three S2 context mirrors."""
         names = re.findall(r"^\s+(school_\w+): tool\(", TS_PLUGIN_SOURCE, re.MULTILINE)
-        assert len(names) == 14, f"tool surface changed: {names}"
+        assert len(names) == 37, f"tool surface changed: {names}"
 
 
 class TestStatusFooterAndDashboard:
@@ -302,3 +304,159 @@ class TestContextOptimizer:
     def test_helper_functions_present(self):
         for name in ("ctxEnabled", "ctxEstimate", "ctxHeuristic", "ctxPayload"):
             _fn_block(name)
+
+
+class TestApplyView:
+    """apply-view: request-time compressed view via context_view segments."""
+
+    def _block(self, name: str) -> str:
+        match = re.search(
+            rf"const {name} = async \([\s\S]*?\n  \}}", TS_PLUGIN_SOURCE
+        )
+        assert match is not None, f"const {name} not found"
+        return match.group(0)
+
+    def test_transform_calls_apply_view_first(self) -> None:
+        block = _hook_block("experimental.chat.messages.transform")
+        assert "await applyView(output)" in block
+        assert block.index("await applyView(output)") < block.index(
+            'info.role !== "user"'
+        )
+
+    def test_apply_view_defined_in_school_scope(self) -> None:
+        source = TS_PLUGIN_SOURCE
+        assert "const applyView = async" in source
+        assert source.index("const recallForExecution = async") < source.index(
+            "const applyView = async"
+        )
+
+    def test_apply_view_gates_kill_switches(self) -> None:
+        block = self._block("applyView")
+        assert "hooksEnabled()" in block
+        assert "ctxEnabled()" in block
+        assert 'process.env.SCHOOL_COMPRESS === "0"' in block
+
+    def test_apply_view_is_timeboxed(self) -> None:
+        assert "const VIEW_TIMEOUT_MS = 4000" in TS_PLUGIN_SOURCE
+        block = self._block("applyView")
+        assert "VIEW_TIMEOUT_MS" in block
+
+    def test_apply_view_sends_context_view_command(self) -> None:
+        block = self._block("applyView")
+        assert 'command: "context_view"' in block
+        assert "messages: plain" in block
+        assert 'session: String(messages[0]?.info?.sessionID ?? "")' in block
+
+    def test_apply_view_fails_open(self) -> None:
+        block = self._block("applyView")
+        assert "try {" in block
+        assert "catch" in block
+        assert "if (!resp.ok) return" in block
+        assert "if (!bridge" in block
+
+    def test_apply_view_rebuilds_from_originals(self) -> None:
+        block = self._block("applyView")
+        assert "if (edit && edit.content == null) continue" in block
+        assert "rebuilt.push(src)" in block
+        assert "synthetic: true" in block
+        assert "output.messages = rebuilt" in block
+
+    def test_apply_view_stores_footer_chip(self) -> None:
+        block = self._block("applyView")
+        assert "schoolStatus.chip = String(" in block
+
+    def test_view_text_of_prefers_text_parts(self) -> None:
+        match = re.search(
+            r"function viewTextOf\([\s\S]*?\n\}", TS_PLUGIN_SOURCE
+        )
+        assert match is not None
+        assert 'p.type === "text"' in match.group(0)
+        assert "info?.content" in match.group(0)
+
+    def test_mode_gate_skips_when_not_school(self) -> None:
+        block = self._block("applyView")
+        assert 'if (mode !== "school") return' in block
+
+
+class TestDcpCoexist:
+    """DCP coexistence in the plugin: detect, one quiet offer, ownership gate."""
+
+    def _block(self, name: str) -> str:
+        match = re.search(
+            rf"const {name} = async \([\s\S]*?\n  \}}", TS_PLUGIN_SOURCE
+        )
+        assert match is not None, f"const {name} not found"
+        return match.group(0)
+
+    def test_dcp_token_constant(self) -> None:
+        assert 'const DCP_TOKEN = "@tarquinen/opencode-dcp"' in TS_PLUGIN_SOURCE
+
+    def test_check_coexist_talks_to_bridge(self) -> None:
+        block = self._block("checkCoexist")
+        assert 'command: "context_coexist"' in block
+        assert 'action: "get"' in block
+        assert 'action: "set_offer"' in block
+
+    def test_check_coexist_gates_kill_switches(self) -> None:
+        block = self._block("checkCoexist")
+        assert "hooksEnabled()" in block
+        assert "ctxEnabled()" in block
+        assert 'process.env.SCHOOL_COMPRESS === "0"' in block
+
+    def test_check_coexist_runs_once_and_fails_open(self) -> None:
+        block = self._block("checkCoexist")
+        assert "coexistDone = true" in block
+        assert "try {" in block
+        assert "catch" in block
+
+    def test_dcp_hint_probed_from_client_config(self) -> None:
+        block = self._block("checkCoexist")
+        assert "client?.config?.get?.()" in block
+        assert "dcpHinted = plugins.some(" in block
+        assert "DCP_TOKEN" in block
+
+    def test_offer_is_one_quiet_toast(self) -> None:
+        block = self._block("checkCoexist")
+        assert "showToast" in block
+        assert "offer_shown" in block
+
+    def test_apply_view_runs_gate_before_view_request(self) -> None:
+        block = self._block("applyView")
+        assert "await checkCoexist()" in block
+        assert block.index("await checkCoexist()") < block.index(
+            'command: "context_view"'
+        )
+
+    def test_apply_view_forwards_dcp_hint(self) -> None:
+        block = self._block("applyView")
+        assert "dcp: dcpHinted" in block
+
+
+class TestCompactingNudge:
+    """experimental.session.compacting: quiet budget-pressure nudge (S2)."""
+
+    def _block(self) -> str:
+        return _hook_block("experimental.session.compacting")
+
+    def test_gates_kill_switches(self) -> None:
+        block = self._block()
+        assert "hooksEnabled()" in block
+        assert "ctxEnabled()" in block
+        assert 'process.env.SCHOOL_COMPRESS === "0"' in block
+
+    def test_nudges_only_above_threshold(self) -> None:
+        block = self._block()
+        assert "Array.isArray" in block
+        assert "ctxEstimate(" in block
+        assert "CTX_THRESHOLD" in block
+        assert "context.push(" in block
+
+    def test_nudge_is_school_voice(self) -> None:
+        block = self._block()
+        assert "[school] compaction ·" in block
+        assert "school_context_compress" in block
+
+    def test_fails_open(self) -> None:
+        block = self._block()
+        assert "try {" in block
+        assert "catch" in block

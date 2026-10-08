@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
@@ -52,7 +53,9 @@ class TestCLI:
 
         assert (plugins_dir / "school.ts").exists()
 
-    def test_install_skip_existing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_install_skip_existing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """school install skips if already installed."""
         config_dir = tmp_path / ".config" / "opencode"
         config_dir.mkdir(parents=True)
@@ -115,3 +118,124 @@ class TestCLI:
         # This is tested by verifying the directory still exists after uninstall
         assert memory_dir.exists()
         assert memory_file.exists()
+
+
+class TestContextCommand:
+    """S2 Task 6: `school context` subcommands over the in-process bridge."""
+
+    def _compress(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> dict:
+        monkeypatch.setenv("SCHOOL_COMPRESS_WINDOW_TOKENS", "200")
+        monkeypatch.setenv("SCHOOL_COMPRESS_TAIL_TOKENS", "0")
+        messages = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": chr(97 + i) * 300}
+            for i in range(8)
+        ]
+        argv = ["school", "context", "compress", "--json", "--worktree", str(tmp_path)]
+        with (
+            patch("sys.argv", argv),
+            patch("school.cli.SchoolConfig"),
+            patch("sys.stdin", StringIO(json.dumps(messages))),
+        ):
+            main()
+        return json.loads(capsys.readouterr().out)
+
+    def test_status_json(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "home")
+        argv = ["school", "context", "status", "--json", "--worktree", str(tmp_path)]
+        with patch("sys.argv", argv), patch("school.cli.SchoolConfig"):
+            main()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["ok"] is True
+        assert payload["mode"] == "school"
+        assert payload["blocks"] == 0
+        assert "chip" in payload
+
+    def test_missing_subcommand_exits(self) -> None:
+        with (
+            patch("sys.argv", ["school", "context"]),
+            patch("school.cli.SchoolConfig"),
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            main()
+        assert excinfo.value.code == 2
+
+    def test_switch_and_keep_persist(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        for decision in ("switch", "keep"):
+            argv = ["school", "context", decision, "--json", "--worktree", str(tmp_path)]
+            with patch("sys.argv", argv), patch("school.cli.SchoolConfig"):
+                main()
+            payload = json.loads(capsys.readouterr().out)
+            assert payload["ok"] is True
+            assert payload["decision"] == decision
+        argv = ["school", "context", "status", "--json", "--worktree", str(tmp_path)]
+        with patch("sys.argv", argv), patch("school.cli.SchoolConfig"):
+            main()
+        assert json.loads(capsys.readouterr().out)["decision"] == "keep"
+
+    def test_compress_reads_messages_from_stdin(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        payload = self._compress(tmp_path, monkeypatch, capsys)
+        assert payload["ok"] is True
+        assert payload["blocks_added"] >= 1
+        assert payload["chip"].startswith("[school] compacted")
+
+    def test_restore_roundtrip_is_idempotent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._compress(tmp_path, monkeypatch, capsys)
+        results = []
+        for _ in range(2):
+            argv = ["school", "context", "restore", "--json", "--worktree", str(tmp_path)]
+            with patch("sys.argv", argv), patch("school.cli.SchoolConfig"):
+                main()
+            results.append(json.loads(capsys.readouterr().out))
+        assert all(r["ok"] for r in results), results
+        assert results[0]["restores"] >= 1
+
+    def test_status_human_prints_dcp_offer(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        (tmp_path / "opencode.json").write_text(
+            json.dumps({"plugin": ["@tarquinen/opencode-dcp"]}),
+            encoding="utf-8",
+        )
+        argv = ["school", "context", "status", "--worktree", str(tmp_path)]
+        with patch("sys.argv", argv), patch("school.cli.SchoolConfig"):
+            main()
+        out = capsys.readouterr().out
+        assert "mode: dcp" in out
+        assert "Keep DCP, or switch?" in out
+        assert "school context switch" in out
+
+    def test_status_human_prints_chip(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        self._compress(tmp_path, monkeypatch, capsys)
+        argv = ["school", "context", "status", "--worktree", str(tmp_path)]
+        with patch("sys.argv", argv), patch("school.cli.SchoolConfig"):
+            main()
+        out = capsys.readouterr().out
+        assert "[school] compacted" in out
+        assert "blocks: " in out

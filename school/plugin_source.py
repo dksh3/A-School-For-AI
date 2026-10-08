@@ -222,6 +222,8 @@ const HOOK_TIMEOUT_MS = 1500
 const HOOK_LIMIT = 3
 const HOOK_THRESHOLD = 0.2
 const HOOK_BUDGET = 400
+const VIEW_TIMEOUT_MS = 4000
+const DCP_TOKEN = "@tarquinen/opencode-dcp"
 
 interface RecallOutcome {
   hits: number
@@ -287,6 +289,15 @@ function clampNum(v: unknown, fallback: number, lo: number, hi: number): number 
 
 function strList(v: unknown): string[] {
   return Array.isArray(v) ? v.map((x) => String(x)) : []
+}
+
+function viewTextOf(m: any): string {
+  const parts = Array.isArray(m?.parts) ? m.parts : []
+  const text = parts
+    .filter((p: any) => p && p.type === "text")
+    .map((p: any) => String(p.text ?? ""))
+    .join("\n")
+  return text || String(m?.info?.content ?? "")
 }
 
 const schoolStatus: Record<string, string> = {}
@@ -804,6 +815,133 @@ const School: Plugin = async (ctx) => {
       return { hits: memories.length, lines: formatRecallLines(memories) }
     } catch {
       return null
+    }
+  }
+
+  let coexistDone = false
+  let dcpHinted = false
+
+  const checkCoexist = async (): Promise<void> => {
+    if (coexistDone) return
+    if (!bridge || !hooksEnabled() || !ctxEnabled()) return
+    if (process.env.SCHOOL_COMPRESS === "0") return
+    coexistDone = true
+    try {
+      if (!dcpHinted) {
+        const cfg: any = await (ctx as any).client?.config?.get?.()
+        const plugins = Array.isArray(cfg?.plugin) ? cfg.plugin : []
+        dcpHinted = plugins.some(
+          (p: any) => JSON.stringify(p).includes(DCP_TOKEN),
+        )
+      }
+      const resp = await invokeBridge(
+        python,
+        bridgePath,
+        {
+          command: "context_coexist",
+          worktree: ctx.worktree,
+          action: "get",
+          dcp: dcpHinted,
+        },
+        VIEW_TIMEOUT_MS,
+      )
+      if (!resp.ok) return
+      const info = resp as any
+      if (!info.dcp || info.offer_shown) return
+      const shown = await invokeBridge(
+        python,
+        bridgePath,
+        {
+          command: "context_coexist",
+          worktree: ctx.worktree,
+          action: "set_offer",
+          dcp: dcpHinted,
+        },
+        VIEW_TIMEOUT_MS,
+      )
+      if (!shown.ok) return
+      const offer = String(info.offer ?? "")
+      if (offer) {
+        try {
+          await (ctx as any).client?.tui?.showToast?.({
+            message: offer,
+            variant: "info",
+          })
+        } catch {
+          // Toasts are best-effort.
+        }
+      }
+    } catch {
+      // Coexistence checks are best-effort.
+    }
+  }
+
+  const applyView = async (output: any): Promise<void> => {
+    try {
+      if (!hooksEnabled() || !ctxEnabled()) return
+      if (process.env.SCHOOL_COMPRESS === "0") return
+      if (!bridge || !output || !Array.isArray(output.messages)) return
+      await checkCoexist()
+      const messages = output.messages
+      if (!messages.length) return
+      const plain = messages.map((m: any) => ({
+        role: String(m?.info?.role ?? "user"),
+        content: viewTextOf(m),
+      }))
+      const resp = await invokeBridge(
+        python,
+        bridgePath,
+        {
+          command: "context_view",
+          worktree: ctx.worktree,
+          session: String(messages[0]?.info?.sessionID ?? ""),
+          dcp: dcpHinted,
+          messages: plain,
+        },
+        VIEW_TIMEOUT_MS,
+      )
+      if (!resp.ok) return
+      schoolStatus.chip = String((resp as any).chip ?? "")
+      const mode = String((resp as any).mode ?? "")
+      if (mode !== "school") return
+      const raw = (resp as any).segments
+      const segs = Array.isArray(raw) ? raw : []
+      if (!segs.length) return
+      const edits = new Map<number, any>()
+      for (const seg of segs) {
+        const idx = Number(seg?.index)
+        if (Number.isInteger(idx) && idx >= 0) edits.set(idx, seg)
+      }
+      const rebuilt: any[] = []
+      for (let i = 0; i < messages.length; i++) {
+        const edit = edits.get(i)
+        if (edit && edit.content == null) continue
+        const src = messages[i]
+        if (!edit) {
+          rebuilt.push(src)
+          continue
+        }
+        const role = String(edit.role ?? "")
+        const info =
+          role && role !== src?.info?.role
+            ? { ...src?.info, role }
+            : src?.info
+        rebuilt.push({
+          info,
+          parts: [{
+            id: `school-view-${src?.info?.id ?? i}`,
+            sessionID: src?.info?.sessionID,
+            messageID: src?.info?.id,
+            type: "text",
+            synthetic: true,
+            text: String(edit.content ?? ""),
+          }],
+        })
+      }
+      if (!rebuilt.length) return
+      output.messages = rebuilt
+    } catch {
+      // Apply-view is best-effort; failures leave messages untouched.
     }
   }
 
@@ -1804,6 +1942,1072 @@ const School: Plugin = async (ctx) => {
           }
         },
       }),
+
+      school_skill_list: tool({
+        description:
+          "Use school_skill_list to list skills in the 1A-2Z registry with " +
+          "state, scope, confidence, and counters. Use after school_status " +
+          "when you need the full inventory rather than ranked matches.",
+        args: {
+          state: tool.schema.string().optional().describe("Filter by lifecycle state."),
+          scope: tool.schema.string().optional().describe("Filter by scope."),
+          limit: tool.schema.number().optional().describe("Maximum skills returned."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill List", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_list",
+            worktree: context.worktree,
+            state: args.state ?? "",
+            scope: args.scope ?? "",
+            limit: args.limit ?? 50,
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill List — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill List",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_search: tool({
+        description:
+          "Use school_skill_search to find reusable skills for a task query " +
+          "with scope-aware ranked matches. Use before solving a problem so " +
+          "proven techniques are reused first.",
+        args: {
+          query: tool.schema.string().describe("Task text to match against skills."),
+          limit: tool.schema.number().optional().describe("Maximum matches returned."),
+          include_unusable: tool.schema
+            .boolean()
+            .optional()
+            .describe("Also include non-retrievable states."),
+          agent_id: tool.schema
+            .string()
+            .optional()
+            .describe("Agent identity for scope isolation."),
+          project: tool.schema
+            .string()
+            .optional()
+            .describe("Project id for scope isolation."),
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Search", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_search",
+            worktree: context.worktree,
+            query: args.query,
+            limit: args.limit ?? 5,
+            include_unusable: args.include_unusable ?? false,
+            agent_id: args.agent_id ?? "opencode",
+            project: args.project ?? "",
+            session: args.session ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Search — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Search",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_create: tool({
+        description:
+          "Use school_skill_create to save a validated agent-authored skill: " +
+          "it is duplicate-checked, security-validated, and self-tested " +
+          "before activation. Use only when 1A-2Z has not already created a " +
+          "skill for this pattern.",
+        args: {
+          name: tool.schema.string().describe("kebab-case skill name."),
+          description: tool.schema.string().describe("One-line capability summary."),
+          purpose: tool.schema.string().describe("Why it exists."),
+          triggers: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("When to use the skill."),
+          inputs: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Expected inputs."),
+          procedure: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Ordered steps (plain instructions)."),
+          expected_output: tool.schema
+            .string()
+            .optional()
+            .describe("What success looks like."),
+          constraints: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Safety/scope limits."),
+          examples: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Usage examples."),
+          scope: tool.schema
+            .string()
+            .optional()
+            .describe("GLOBAL|AGENT|PROJECT|SESSION."),
+          tags: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Searchable tags."),
+          agent_id: tool.schema
+            .string()
+            .optional()
+            .describe("Agent identity for scope isolation."),
+          project: tool.schema
+            .string()
+            .optional()
+            .describe("Project id for scope isolation."),
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Create", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_create",
+            worktree: context.worktree,
+            name: args.name,
+            description: args.description,
+            purpose: args.purpose,
+            triggers: args.triggers ?? [],
+            inputs: args.inputs ?? [],
+            procedure: args.procedure ?? [],
+            expected_output: args.expected_output ?? "",
+            constraints: args.constraints ?? [],
+            examples: args.examples ?? [],
+            scope: args.scope ?? "",
+            tags: args.tags ?? [],
+            agent_id: args.agent_id ?? "opencode",
+            project: args.project ?? "",
+            session: args.session ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Create — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Create",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_use: tool({
+        description:
+          "Use school_skill_use to retrieve one skill by name (or search by " +
+          "query) and record the reuse. Returns scope-checked SKILL.md " +
+          "content ready to follow.",
+        args: {
+          name: tool.schema.string().optional().describe("Exact skill name."),
+          query: tool.schema
+            .string()
+            .optional()
+            .describe("Task query when name is unknown."),
+          agent_id: tool.schema
+            .string()
+            .optional()
+            .describe("Agent identity for scope isolation."),
+          project: tool.schema
+            .string()
+            .optional()
+            .describe("Project id for scope isolation."),
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Use", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_use",
+            worktree: context.worktree,
+            name: args.name ?? "",
+            query: args.query ?? "",
+            agent_id: args.agent_id ?? "opencode",
+            project: args.project ?? "",
+            session: args.session ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Use — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          const md = (result as any).markdown
+          const head = (result as any).skill
+            ? `${result.skill} v${(result as any).version} ` +
+              `(${result.state}, conf ${result.confidence})`
+            : JSON.stringify(result, null, 2)
+          return {
+            title: "School Skill Use",
+            output: typeof md === "string" ? `${head}\n\n${md}` : JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_feedback: tool({
+        description:
+          "Use school_skill_feedback to report whether reusing a skill " +
+          "succeeded or failed, updating confidence and lifecycle. Call " +
+          "after applying a skill so it evolves.",
+        args: {
+          name: tool.schema.string().describe("Skill name."),
+          success: tool.schema.boolean().describe("Did the reuse work?"),
+          note: tool.schema.string().optional().describe("Optional context."),
+          agent_id: tool.schema
+            .string()
+            .optional()
+            .describe("Agent identity for scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Feedback", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_feedback",
+            worktree: context.worktree,
+            name: args.name,
+            success: args.success === true,
+            note: args.note ?? "",
+            agent_id: args.agent_id ?? "opencode",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Feedback — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Feedback",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_status: tool({
+        description:
+          "Use school_skill_status for 1A-2Z counters: skills by state, " +
+          "model calls used versus budget, recent events, and registry " +
+          "health. Use when auditing the self-growing loop.",
+        args: {},
+        async execute(_args, context) {
+          if (!bridge) {
+            return { title: "School Skill Status", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_status",
+            worktree: context.worktree,
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Status — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Status",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_evolve: tool({
+        description:
+          "Use school_skill_evolve to consolidate duplicate skills, revise a " +
+          "skill's fields with versioning, or recompute lifecycle states. " +
+          "Use for maintenance instead of creating near-duplicates.",
+        args: {
+          action: tool.schema
+            .enum(["consolidate", "revise", "recompute"])
+            .optional()
+            .describe("consolidate | revise | recompute."),
+          name: tool.schema.string().optional().describe("Skill to revise."),
+          changes: tool.schema
+            .record(tool.schema.string(), tool.schema.unknown())
+            .optional()
+            .describe("Field updates for revise."),
+          agent_id: tool.schema
+            .string()
+            .optional()
+            .describe("Agent identity for scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Evolve", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_evolve",
+            worktree: context.worktree,
+            action: args.action ?? "consolidate",
+            name: args.name ?? "",
+            changes: args.changes ?? null,
+            agent_id: args.agent_id ?? "opencode",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Evolve — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Evolve",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_search_github: tool({
+        description:
+          "Use school_skill_search_github to run bounded GitHub repository " +
+          "searches for a capability gap and return candidate skill sources. " +
+          "Read-only; network required. Use only when local skills are " +
+          "insufficient.",
+        args: {
+          task: tool.schema
+            .string()
+            .optional()
+            .describe("Current task driving the capability gap."),
+          capability_gap: tool.schema
+            .string()
+            .optional()
+            .describe("Missing capability to search for (preferred over task)."),
+          keywords: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Extra focused keywords (no conversation content)."),
+          skill_name: tool.schema
+            .string()
+            .optional()
+            .describe("Known skill name to find equivalents for."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Search Github", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_search_github",
+            worktree: context.worktree,
+            task: args.task ?? "",
+            capability_gap: args.capability_gap ?? "",
+            keywords: args.keywords ?? [],
+            skill_name: args.skill_name ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return {
+              title: "School Skill Search Github — Failed",
+              output: `Error: ${msg}`,
+            }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Search Github",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_discover: tool({
+        description:
+          "Use school_skill_discover to scan GitHub search results for " +
+          "skill-like files with deterministic filtering and security " +
+          "classification. Returns candidates for analysis; never downloads " +
+          "repositories or executes code.",
+        args: {
+          task: tool.schema
+            .string()
+            .optional()
+            .describe("Current task driving the capability gap."),
+          capability_gap: tool.schema
+            .string()
+            .optional()
+            .describe("Missing capability to search for (preferred over task)."),
+          keywords: tool.schema
+            .array(tool.schema.string())
+            .optional()
+            .describe("Extra focused keywords (no conversation content)."),
+          skill_name: tool.schema
+            .string()
+            .optional()
+            .describe("Known skill name to find equivalents for."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Discover", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_discover",
+            worktree: context.worktree,
+            task: args.task ?? "",
+            capability_gap: args.capability_gap ?? "",
+            keywords: args.keywords ?? [],
+            skill_name: args.skill_name ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Discover — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Discover",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_analyze_external: tool({
+        description:
+          "Use school_skill_analyze_external to run budgeted model analysis " +
+          "on one GitHub candidate: relevance, quality, security, and local " +
+          "duplication. Read-only and fail-closed; malformed model output " +
+          "rejects the candidate.",
+        args: {
+          owner: tool.schema.string().describe("GitHub repository owner."),
+          repo: tool.schema.string().describe("GitHub repository name."),
+          file_path: tool.schema
+            .string()
+            .optional()
+            .describe("Specific skill file path inside the repository."),
+          task: tool.schema
+            .string()
+            .optional()
+            .describe("Current task driving the capability gap."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Analyze External", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_analyze_external",
+            worktree: context.worktree,
+            owner: args.owner,
+            repo: args.repo,
+            file_path: args.file_path ?? "",
+            task: args.task ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return {
+              title: "School Skill Analyze External — Failed",
+              output: `Error: ${msg}`,
+            }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Analyze External",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_compare: tool({
+        description:
+          "Use school_skill_compare to compare a GitHub candidate against " +
+          "local skills for duplicates or improvement. Read-only; any local " +
+          "skill change still requires explicit approval via " +
+          "school_skill_evolve.",
+        args: {
+          owner: tool.schema.string().describe("GitHub repository owner."),
+          repo: tool.schema.string().describe("GitHub repository name."),
+          file_path: tool.schema
+            .string()
+            .optional()
+            .describe("Specific skill file path inside the repository."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Compare", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_compare",
+            worktree: context.worktree,
+            owner: args.owner,
+            repo: args.repo,
+            file_path: args.file_path ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Compare — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Compare",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_skill_import: tool({
+        description:
+          "Use school_skill_import to import an approved GitHub candidate " +
+          "into the local registry after user review. Requires approve=true; " +
+          "imported skills enter the Phase 1 lifecycle as CANDIDATE, never " +
+          "auto-PROVEN.",
+        args: {
+          owner: tool.schema.string().describe("GitHub repository owner."),
+          repo: tool.schema.string().describe("GitHub repository name."),
+          file_path: tool.schema
+            .string()
+            .optional()
+            .describe("Specific skill file path inside the repository."),
+          approve: tool.schema
+            .boolean()
+            .describe("Explicit user approval to import (required)."),
+          scope: tool.schema
+            .string()
+            .optional()
+            .describe("GLOBAL|AGENT|PROJECT|SESSION (default agent)."),
+          acknowledge_license: tool.schema
+            .boolean()
+            .optional()
+            .describe("User acknowledged UNKNOWN license review."),
+          agent_id: tool.schema
+            .string()
+            .optional()
+            .describe("Agent identity for scope isolation."),
+          project: tool.schema
+            .string()
+            .optional()
+            .describe("Project id for PROJECT scope isolation."),
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for SESSION scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Skill Import", output: "School: unavailable." }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "skill_import",
+            worktree: context.worktree,
+            owner: args.owner,
+            repo: args.repo,
+            file_path: args.file_path ?? "",
+            approve: args.approve,
+            scope: args.scope ?? "agent",
+            acknowledge_license: args.acknowledge_license ?? false,
+            agent_id: args.agent_id ?? "opencode",
+            project: args.project ?? "",
+            session: args.session ?? "",
+          })
+          if (!resp.ok) {
+            const errs = (resp as any).errors
+            const msg = Array.isArray(errs) && errs.length
+              ? errs.join("; ")
+              : (resp as any).error?.message ?? "failed"
+            return { title: "School Skill Import — Failed", output: `Error: ${msg}` }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Skill Import",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_context_status: tool({
+        description:
+          "Use school_context_status to report the School context engine: " +
+          "blocks stored, restores, tokens saved, view mode (school|dcp|off), " +
+          "DCP decision, and a chip one-liner. Read-only - call before " +
+          "compress or restore.",
+        args: {
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for scope isolation."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return {
+              title: "School Context Status",
+              output: "School: unavailable.",
+            }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "context_status",
+            worktree: context.worktree,
+            session: args.session,
+          })
+          if (!resp.ok) {
+            const msg = (resp as any).error?.message ?? "failed"
+            return {
+              title: "School Context Status - Failed",
+              output: `Error: ${msg}`,
+            }
+          }
+          return {
+            title: "School Context Status",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_context_compress: tool({
+        description:
+          "Use school_context_compress to compress session messages through " +
+          "the School context engine, returning blocks added, tokens saved, " +
+          "and a chip. Explicit action only - never automatic; " +
+          "SCHOOL_COMPRESS=0 disables it.",
+        args: {
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for scope isolation."),
+          messages: tool.schema
+            .array(tool.schema.any())
+            .optional()
+            .describe("Session messages to compress: [{role, content}]."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return {
+              title: "School Context Compress",
+              output: "School: unavailable.",
+            }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "context_compress",
+            worktree: context.worktree,
+            session: args.session,
+            messages: args.messages ?? [],
+          })
+          if (!resp.ok) {
+            const msg = (resp as any).error?.message ?? "failed"
+            return {
+              title: "School Context Compress - Failed",
+              output: `Error: ${msg}`,
+            }
+          }
+          return {
+            title: "School Context Compress",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_context_restore: tool({
+        description:
+          "Use school_context_restore to restore compressed blocks by " +
+          "block_id (empty id restores all) - idempotent, returning restores " +
+          "count, store state, and a chip. Call school_context_status first " +
+          "to list block ids.",
+        args: {
+          session: tool.schema
+            .string()
+            .optional()
+            .describe("Session id for scope isolation."),
+          block_id: tool.schema
+            .string()
+            .optional()
+            .describe("Block id to restore (empty = latest)."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return {
+              title: "School Context Restore",
+              output: "School: unavailable.",
+            }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "context_restore",
+            worktree: context.worktree,
+            session: args.session,
+            block_id: args.block_id ?? "",
+          })
+          if (!resp.ok) {
+            const msg = (resp as any).error?.message ?? "failed"
+            return {
+              title: "School Context Restore - Failed",
+              output: `Error: ${msg}`,
+            }
+          }
+          const result = (resp as any).result ?? resp
+          return {
+            title: "School Context Restore",
+            output: JSON.stringify(result, null, 2),
+            metadata: result,
+          }
+        },
+      }),
+
+      school_observe: tool({
+        description:
+          "Use school_observe to record an agent-behaviour observation and " +
+          "extract a pattern. Categories: tool_call, error, pattern, research, " +
+          "execute. Fail-open on errors.",
+        args: {
+          observation: tool.schema.string().describe("What was observed."),
+          category: tool.schema
+            .string()
+            .optional()
+            .describe("Category: tool_call | error | pattern | research | execute."),
+          evidence: tool.schema
+            .any()
+            .optional()
+            .describe("Optional evidence dict."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Observe", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "observe",
+            worktree: context.worktree,
+            observation: args.observation,
+            category: args.category,
+            evidence: args.evidence,
+          })
+          return {
+            title: "School Observe",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_goal: tool({
+        description:
+          "Use school_goal to manage learning goals: set / status / complete / " +
+          "block / pause / resume / clear / history. Returns goal state and progress.",
+        args: {
+          action: tool.schema
+            .string()
+            .describe("set | status | complete | block | pause | resume | clear | history"),
+          goal_id: tool.schema.string().optional().describe("Goal id for state changes."),
+          objective: tool.schema.string().optional().describe("Goal objective (set)."),
+          success_criteria: tool.schema.string().optional().describe("Success criteria (set)."),
+          max_turns: tool.schema.number().optional().describe("Max turns (set)."),
+          constraints: tool.schema.string().optional().describe("Constraints or blocker text."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Goal", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "goal",
+            worktree: context.worktree,
+            action: args.action,
+            goal_id: args.goal_id,
+            objective: args.objective,
+            success_criteria: args.success_criteria,
+            max_turns: args.max_turns,
+            constraints: args.constraints,
+          })
+          return {
+            title: "School Goal",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_research: tool({
+        description:
+          "Use school_research to research a query against internal knowledge " +
+          "first, then distill learnings. Fail-open. " +
+          "SCHOOL_RESEARCH=0 disables it.",
+        args: {
+          query: tool.schema.string().describe("Research query."),
+          depth: tool.schema
+            .string()
+            .optional()
+            .describe("shallow | deep (default shallow)."),
+          format: tool.schema
+            .string()
+            .optional()
+            .describe("summary | detailed (default summary)."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Research", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "research",
+            worktree: context.worktree,
+            query: args.query,
+            depth: args.depth,
+            format: args.format,
+          })
+          return {
+            title: "School Research",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_explore: tool({
+        description:
+          "Use school_explore to explore a codebase path and extract structure, " +
+          "patterns, and conventions. Returns a structural summary.",
+        args: {
+          target: tool.schema.string().describe("Relative or absolute path to explore."),
+          depth: tool.schema
+            .string()
+            .optional()
+            .describe("file | dir (default file)."),
+          focus: tool.schema
+            .string()
+            .optional()
+            .describe("structure | patterns (default structure)."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Explore", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "explore",
+            worktree: context.worktree,
+            target: args.target,
+            depth: args.depth,
+            focus: args.focus,
+          })
+          return {
+            title: "School Explore",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_progress: tool({
+        description:
+          "Use school_progress to track learning progress with visual bars. " +
+          "Actions: write (set items), read (get bars + items).",
+        args: {
+          action: tool.schema.string().describe("write | read"),
+          items: tool.schema
+            .array(tool.schema.any())
+            .optional()
+            .describe('Items: [{"content": str, "status": "pending|in_progress|completed"}]'),
+          context: tool.schema.string().optional().describe("Optional context string."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Progress", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "progress",
+            worktree: context.worktree,
+            action: args.action,
+            items: args.items,
+            context: args.context,
+          })
+          return {
+            title: "School Progress",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_session: tool({
+        description:
+          "Use school_session to manage session lifecycle: create / resume / " +
+          "summarize / export / list.",
+        args: {
+          action: tool.schema
+            .string()
+            .describe("create | resume | summarize | export | list"),
+          session_id: tool.schema.string().optional().describe("Session id for actions."),
+          focus: tool.schema.string().optional().describe("Session focus (create)."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Session", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "session",
+            worktree: context.worktree,
+            action: args.action,
+            session_id: args.session_id,
+            focus: args.focus,
+          })
+          return {
+            title: "School Session",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_execute: tool({
+        description:
+          "Use school_execute to run a shell command and learn from its " +
+          "outcome (success or failure). Set learn=false to skip learning. " +
+          "SCHOOL_EXECUTE=0 disables it.",
+        args: {
+          command: tool.schema.string().describe("Shell command to run."),
+          learn: tool.schema
+            .boolean()
+            .optional()
+            .describe("Record an observation (default true)."),
+          context: tool.schema.string().optional().describe("Context string."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Execute", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "execute",
+            worktree: context.worktree,
+            cmd: args.command,
+            learn: args.learn,
+            context: args.context,
+          })
+          return {
+            title: "School Execute",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_navigate: tool({
+        description:
+          "Use school_navigate to read, list, search, or map project files. " +
+          "Actions: read | list | search | map. " +
+          "SCHOOL_NAVIGATE=0 disables it.",
+        args: {
+          action: tool.schema.string().describe("read | list | search | map"),
+          path: tool.schema.string().optional().describe("Relative or absolute path."),
+          pattern: tool.schema.string().optional().describe("Regex pattern (search)."),
+          depth: tool.schema.number().optional().describe("Tree depth (map, default 3)."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Navigate", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "navigate",
+            worktree: context.worktree,
+            action: args.action,
+            path: args.path,
+            pattern: args.pattern,
+            depth: args.depth,
+          })
+          return {
+            title: "School Navigate",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_workflow: tool({
+        description:
+          "Use school_workflow to run SDD workflows (tdd, debug, brainstorm, review). " +
+          "Actions: start | advance | status | abort | list | define | block. " +
+          "Persists state and learns from run history. " +
+          "SCHOOL_WORKFLOW=0 disables it.",
+        args: {
+          name: tool.schema.string().describe("Workflow name: tdd | debug | brainstorm | review"),
+          action: tool.schema.string().optional().describe("start | advance | status | abort | list | define | block"),
+          phase: tool.schema.string().optional().describe("Phase name or comma-separated for define."),
+          notes: tool.schema.string().optional().describe("Notes for the current phase."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Workflow", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "workflow",
+            worktree: context.worktree,
+            name: args.name,
+            action: args.action,
+            phase: args.phase,
+            notes: args.notes,
+          })
+          return {
+            title: "School Workflow",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_docs: tool({
+        description:
+          "Use school_docs to fetch library/framework docs with local caching. " +
+          "Returns skeletonized content for token efficiency. " +
+          "Supports version pinning via library + version. " +
+          "SCHOOL_DOCS=0 disables it.",
+        args: {
+          query: tool.schema.string().describe("Documentation query."),
+          library: tool.schema.string().optional().describe("Library name."),
+          version: tool.schema.string().optional().describe("Library version for pinning."),
+          use_cache: tool.schema.boolean().optional().describe("Use cached docs if available (default true)."),
+        },
+        async execute(args, context) {
+          if (!bridge) return { title: "School Docs", output: "School: unavailable." }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "docs",
+            worktree: context.worktree,
+            query: args.query,
+            library: args.library,
+            version: args.version,
+            use_cache: args.use_cache,
+          })
+          return {
+            title: "School Docs",
+            output: JSON.stringify(resp, null, 2),
+            metadata: resp,
+          }
+        },
+      }),
     },
 
     "tool.execute.before": async (input, output) => {
@@ -1893,19 +3097,35 @@ const School: Plugin = async (ctx) => {
         if (typeof output.text !== "string" || !output.text.trim()) return
         if (output.text.includes("[school] route:")) return
         output.text = `${output.text}\n\n[school] ${schoolFooter()}`
+        if (schoolStatus.chip) output.text += `\n${schoolStatus.chip}`
       } catch {
         // The status footer is visibility-only; never break the response.
       }
     },
 
+    "experimental.session.compacting": async (_input, output) => {
+      try {
+        if (!hooksEnabled() || !ctxEnabled()) return
+        if (process.env.SCHOOL_COMPRESS === "0") return
+        const context = (output as any)?.context
+        if (!Array.isArray(context) || !context.length) return
+        const est = ctxEstimate(context.join("\n"))
+        if (est < CTX_THRESHOLD) return
+        context.push(
+          "[school] compaction · school_context_compress keeps blocks restorable",
+        )
+      } catch {
+        // Compaction nudges are best-effort.
+      }
+    },
+
     "experimental.chat.messages.transform": async (_input, output) => {
       try {
+        await applyView(output)
         const messages = output.messages ?? []
         if (!messages.length) return
         const last = messages[messages.length - 1]
         const info: any = last.info
-        // Inject only at prompt time (turn starts with a user message),
-        // exactly once per prompt, budgeted to the stashed recall.
         if (!info || info.role !== "user" || !info.sessionID) return
         const rec = promptRecalls.get(info.sessionID)
         if (!rec) return
@@ -1919,7 +3139,7 @@ const School: Plugin = async (ctx) => {
           text: `[school context]\n${rec.lines.join("\n")}\n[/school]`,
         })
       } catch {
-        // Context injection is best-effort.
+        // Context injection and apply-view are best-effort.
       }
     },
   }

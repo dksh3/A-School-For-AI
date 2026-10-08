@@ -1,5 +1,4 @@
 """Tests for factory."""
-import pytest
 from core.routing.v26.factory import create_orchestrator
 
 
@@ -18,12 +17,34 @@ class TestFactory:
             "school_knowledge",
             "school_lifecycle",
             "school_diagnose",
+            "school_skill_list",
+            "school_skill_search",
+            "school_skill_create",
+            "school_skill_use",
+            "school_skill_feedback",
+            "school_skill_status",
+            "school_skill_evolve",
         ]
         for name in expected:
             assert name in tool_names, f"Tool {name} not registered"
 
-    def test_create_orchestrator_all_executable(self):
+    def test_create_orchestrator_all_executable(self, tmp_path, monkeypatch):
         orch = create_orchestrator()
+        wt = str(tmp_path)  # keep skillgen writes out of the repo tree
+        # Phase 2 tools are network-bound: mock discovery (no live GitHub).
+        from core.routing.v26.tools import skillgen_github
+
+        def _fake_discovery(*_args, **_kwargs):
+            return {"ok": True}
+
+        for _fn in (
+            "search_github",
+            "discover",
+            "analyze_external",
+            "compare",
+            "import_external",
+        ):
+            monkeypatch.setattr(skillgen_github.discovery, _fn, _fake_discovery)
         # Tools that need specific params - provide defaults
         defaults = {
             "school_remember": {"content": "test"},
@@ -32,6 +53,37 @@ class TestFactory:
             "school_deduplicate": {"content": "test"},
             "school_search": {"query": "test"},
             "school_lifecycle": {"action": "score", "memory_id": "test"},
+            "school_skill_list": {"worktree": wt},
+            "school_skill_search": {"query": "test", "worktree": wt},
+            "school_skill_create": {
+                "name": "factory-exec-test",
+                "description": "Factory executable test skill",
+                "purpose": "Created by the factory executability test",
+                "procedure": ["Do the one thing"],
+                "worktree": wt,
+            },
+            "school_skill_use": {"query": "test", "worktree": wt},
+            "school_skill_feedback": {
+                "name": "factory-exec-test",
+                "success": True,
+                "worktree": wt,
+            },
+            "school_skill_status": {"worktree": wt},
+            "school_skill_evolve": {"worktree": wt},
+            "school_skill_search_github": {"task": "test task", "worktree": wt},
+            "school_skill_discover": {"task": "test task", "worktree": wt},
+            "school_skill_analyze_external": {
+                "owner": "acme",
+                "repo": "demo",
+                "worktree": wt,
+            },
+            "school_skill_compare": {"owner": "acme", "repo": "demo", "worktree": wt},
+            "school_skill_import": {
+                "owner": "acme",
+                "repo": "demo",
+                "approve": True,
+                "worktree": wt,
+            },
         }
         # Tools that may fail due to state dependencies (not param issues)
         state_dependent = {"school_lifecycle"}

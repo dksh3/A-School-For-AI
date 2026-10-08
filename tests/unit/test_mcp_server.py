@@ -29,6 +29,21 @@ EXPECTED_TOOL_ORDER = [
     "school_route_stats",
     "school_read",
     "school_grep",
+    "school_skill_list",
+    "school_skill_search",
+    "school_skill_create",
+    "school_skill_use",
+    "school_skill_feedback",
+    "school_skill_status",
+    "school_skill_evolve",
+    "school_skill_search_github",
+    "school_skill_discover",
+    "school_skill_analyze_external",
+    "school_skill_compare",
+    "school_skill_import",
+    "school_context_status",
+    "school_context_compress",
+    "school_context_restore",
 ]
 
 
@@ -453,6 +468,14 @@ class TestRoutingGuidance:
             "school_route_stats",
             "school_read",
             "school_grep",
+            "school_skill_list",
+            "school_skill_search",
+            "school_skill_status",
+            "school_skill_search_github",
+            "school_skill_discover",
+            "school_skill_analyze_external",
+            "school_skill_compare",
+            "school_context_status",
         }
         for name in read_only:
             assert tools[name].annotations.idempotent_hint is True, name
@@ -702,3 +725,76 @@ class TestGrepToolMCP:
         assert "more matches in" in data["content"]
         kept = [ln for ln in data["content"].splitlines() if ln.startswith("c.txt:")]
         assert len(kept) == 10
+
+
+class TestContextToolsMCP:
+    """The three context mirror tools over MCP (S2)."""
+
+    def test_status_reports_mode_and_blocks(
+        self, worktree: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(Path, "home", lambda: Path(worktree).parent / "home")
+        result = mcp_server._call_tool(worktree, "school_context_status", {})
+        assert result.is_error is False
+        payload = json.loads(result.content[0].text)
+        assert payload["ok"] is True
+        assert payload["mode"] == "school"
+        assert payload["blocks"] == 0
+        assert "chip" in payload
+        assert result.structured_content == payload
+
+    def test_compress_then_status_chip(
+        self, worktree: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SCHOOL_COMPRESS_WINDOW_TOKENS", "200")
+        monkeypatch.setenv("SCHOOL_COMPRESS_TAIL_TOKENS", "0")
+        messages = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": chr(97 + i) * 300}
+            for i in range(8)
+        ]
+        done = mcp_server._call_tool(
+            worktree, "school_context_compress", {"messages": messages}
+        )
+        assert json.loads(done.content[0].text)["blocks_added"] >= 1
+        status = mcp_server._call_tool(worktree, "school_context_status", {})
+        payload = json.loads(status.content[0].text)
+        assert payload["blocks"] >= 1
+        assert payload["chip"].startswith("[school] compacted")
+
+    def test_restore_roundtrip_is_idempotent(
+        self, worktree: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("SCHOOL_COMPRESS_WINDOW_TOKENS", "200")
+        monkeypatch.setenv("SCHOOL_COMPRESS_TAIL_TOKENS", "0")
+        messages = [
+            {"role": "user" if i % 2 == 0 else "assistant", "content": chr(97 + i) * 300}
+            for i in range(8)
+        ]
+        mcp_server._call_tool(
+            worktree, "school_context_compress", {"messages": messages}
+        )
+        results = []
+        for _ in range(2):
+            result = mcp_server._call_tool(
+                worktree, "school_context_restore", {"block_id": ""}
+            )
+            results.append(json.loads(result.content[0].text))
+        assert all(r["ok"] for r in results), results
+        assert results[0]["restores"] >= 1
+
+    def test_unknown_arguments_are_filtered(self, worktree: str) -> None:
+        result = mcp_server._call_tool(
+            worktree, "school_context_status", {"bogus": 1}
+        )
+        assert result.is_error is False
+        assert json.loads(result.content[0].text)["ok"] is True
+
+    def test_annotations_match_surface(self) -> None:
+        tools = {t.name: t for t in mcp_server._list_tools().tools}
+        status = tools["school_context_status"].annotations
+        assert status.read_only_hint is True
+        assert status.idempotent_hint is True
+        restore = tools["school_context_restore"].annotations
+        assert restore.read_only_hint is None
+        assert restore.idempotent_hint is True
+        assert tools["school_context_compress"].annotations is None

@@ -467,6 +467,591 @@ _TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "school_skill_list": {
+        "description": (
+            "Use school_skill_list to list skills in the 1A-2Z registry with "
+            "state, scope, confidence, and counters. Use after school_status "
+            "when you need the full inventory rather than ranked matches."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "state": {"type": "string", "description": "Filter by lifecycle state."},
+                "scope": {"type": "string", "description": "Filter by scope."},
+                "limit": {"type": "integer", "description": "Maximum skills returned."},
+            },
+        },
+    },
+    "school_skill_search": {
+        "description": (
+            "Use school_skill_search to find reusable skills for a task query "
+            "with scope-aware ranked matches. Use before solving a problem so "
+            "proven techniques are reused first."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Task text to match against skills."},
+                "limit": {"type": "integer", "description": "Maximum matches returned."},
+                "include_unusable": {
+                    "type": "boolean",
+                    "description": "Also include non-retrievable states.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identity for scope isolation.",
+                },
+                "project": {"type": "string", "description": "Project id for scope isolation."},
+                "session": {"type": "string", "description": "Session id for scope isolation."},
+            },
+            "required": ["query"],
+        },
+    },
+    "school_skill_create": {
+        "description": (
+            "Use school_skill_create to save a validated agent-authored skill: "
+            "it is duplicate-checked, security-validated, and self-tested "
+            "before activation. Use only when 1A-2Z has not already created a "
+            "skill for this pattern."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "kebab-case skill name."},
+                "description": {
+                    "type": "string",
+                    "description": "One-line capability summary.",
+                },
+                "purpose": {"type": "string", "description": "Why it exists."},
+                "triggers": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "When to use the skill.",
+                },
+                "inputs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Expected inputs.",
+                },
+                "procedure": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Ordered steps (plain instructions).",
+                },
+                "expected_output": {
+                    "type": "string",
+                    "description": "What success looks like.",
+                },
+                "constraints": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Safety/scope limits.",
+                },
+                "examples": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Usage examples.",
+                },
+                "scope": {"type": "string", "description": "GLOBAL|AGENT|PROJECT|SESSION."},
+                "tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Searchable tags.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identity for scope isolation.",
+                },
+                "project": {"type": "string", "description": "Project id for scope isolation."},
+                "session": {"type": "string", "description": "Session id for scope isolation."},
+            },
+            "required": ["name", "description", "purpose", "procedure"],
+        },
+    },
+    "school_skill_use": {
+        "description": (
+            "Use school_skill_use to retrieve one skill by name (or search by "
+            "query) and record the reuse. Returns scope-checked SKILL.md "
+            "content ready to follow."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Exact skill name."},
+                "query": {"type": "string", "description": "Task query when name is unknown."},
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identity for scope isolation.",
+                },
+                "project": {"type": "string", "description": "Project id for scope isolation."},
+                "session": {"type": "string", "description": "Session id for scope isolation."},
+            },
+        },
+    },
+    "school_skill_feedback": {
+        "description": (
+            "Use school_skill_feedback to report whether reusing a skill "
+            "succeeded or failed, updating confidence and lifecycle. Call "
+            "after applying a skill so it evolves."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Skill name."},
+                "success": {"type": "boolean", "description": "Did the reuse work?"},
+                "note": {"type": "string", "description": "Optional context."},
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identity for scope isolation.",
+                },
+            },
+            "required": ["name", "success"],
+        },
+    },
+    "school_skill_status": {
+        "description": (
+            "Use school_skill_status for 1A-2Z counters: skills by state, "
+            "model calls used versus budget, recent events, and registry "
+            "health. Use when auditing the self-growing loop."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {"type": "object", "properties": {}},
+    },
+    "school_skill_evolve": {
+        "description": (
+            "Use school_skill_evolve to consolidate duplicate skills, revise a "
+            "skill's fields with versioning, or recompute lifecycle states. "
+            "Use for maintenance instead of creating near-duplicates."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "consolidate | revise | recompute.",
+                },
+                "name": {"type": "string", "description": "Skill to revise."},
+                "changes": {
+                    "type": "object",
+                    "description": "Field updates for revise.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identity for scope isolation.",
+                },
+            },
+        },
+    },
+    "school_skill_search_github": {
+        "description": (
+            "Use school_skill_search_github to run bounded GitHub repository "
+            "searches for a capability gap and return candidate skill sources. "
+            "Read-only; network required. Use only when local skills are "
+            "insufficient."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Current task driving the capability gap.",
+                },
+                "capability_gap": {
+                    "type": "string",
+                    "description": "Missing capability to search for.",
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra focused keywords (no conversation content).",
+                },
+                "skill_name": {
+                    "type": "string",
+                    "description": "Known skill name to find equivalents for.",
+                },
+            },
+        },
+    },
+    "school_skill_discover": {
+        "description": (
+            "Use school_skill_discover to scan GitHub search results for "
+            "skill-like files with deterministic filtering and security "
+            "classification. Returns candidates for analysis; never downloads "
+            "repositories or executes code."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "task": {
+                    "type": "string",
+                    "description": "Current task driving the capability gap.",
+                },
+                "capability_gap": {
+                    "type": "string",
+                    "description": "Missing capability to search for.",
+                },
+                "keywords": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Extra focused keywords (no conversation content).",
+                },
+                "skill_name": {
+                    "type": "string",
+                    "description": "Known skill name to find equivalents for.",
+                },
+            },
+        },
+    },
+    "school_skill_analyze_external": {
+        "description": (
+            "Use school_skill_analyze_external to run budgeted model analysis "
+            "on one GitHub candidate: relevance, quality, security, and local "
+            "duplication. Read-only and fail-closed; malformed model output "
+            "rejects the candidate."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "GitHub repository owner."},
+                "repo": {"type": "string", "description": "GitHub repository name."},
+                "file_path": {
+                    "type": "string",
+                    "description": "Specific skill file path inside the repository.",
+                },
+                "task": {
+                    "type": "string",
+                    "description": "Current task driving the capability gap.",
+                },
+            },
+            "required": ["owner", "repo"],
+        },
+    },
+    "school_skill_compare": {
+        "description": (
+            "Use school_skill_compare to compare a GitHub candidate against "
+            "local skills for duplicates or improvement. Read-only; any local "
+            "skill change still requires explicit approval via "
+            "school_skill_evolve."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "GitHub repository owner."},
+                "repo": {"type": "string", "description": "GitHub repository name."},
+                "file_path": {
+                    "type": "string",
+                    "description": "Specific skill file path inside the repository.",
+                },
+            },
+            "required": ["owner", "repo"],
+        },
+    },
+    "school_skill_import": {
+        "description": (
+            "Use school_skill_import to import an approved GitHub candidate "
+            "into the local registry after user review. Requires approve=true; "
+            "imported skills enter the Phase 1 lifecycle as CANDIDATE, never "
+            "auto-PROVEN."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "owner": {"type": "string", "description": "GitHub repository owner."},
+                "repo": {"type": "string", "description": "GitHub repository name."},
+                "file_path": {
+                    "type": "string",
+                    "description": "Specific skill file path inside the repository.",
+                },
+                "approve": {
+                    "type": "boolean",
+                    "description": "Explicit user approval to import (required).",
+                },
+                "scope": {
+                    "type": "string",
+                    "description": "GLOBAL|AGENT|PROJECT|SESSION (default agent).",
+                },
+                "acknowledge_license": {
+                    "type": "boolean",
+                    "description": "User acknowledged UNKNOWN license review.",
+                },
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identity for scope isolation.",
+                },
+                "project": {
+                    "type": "string",
+                    "description": "Project id for scope isolation.",
+                },
+                "session": {
+                    "type": "string",
+                    "description": "Session id for scope isolation.",
+                },
+            },
+            "required": ["owner", "repo", "approve"],
+        },
+    },
+    "school_context_status": {
+        "description": (
+            "Use school_context_status to report the School context engine: "
+            "blocks stored, restores, tokens saved, view mode (school|dcp|off), "
+            "DCP decision, and a chip one-liner. Read-only - call before "
+            "compress or restore."
+        ),
+        "annotations": {"read_only_hint": True, "idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "type": "string",
+                    "description": "Session id for scope isolation.",
+                },
+            },
+        },
+    },
+    "school_context_compress": {
+        "description": (
+            "Use school_context_compress to compress session messages through "
+            "the School context engine, returning blocks added, tokens saved, "
+            "and a chip. Explicit action only - never automatic; "
+            "SCHOOL_COMPRESS=0 disables it."
+        ),
+        "schema": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "type": "string",
+                    "description": "Session id for scope isolation.",
+                },
+                "messages": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Session messages to compress: [{role, content}].",
+                },
+            },
+        },
+    },
+    "school_context_restore": {
+        "description": (
+            "Use school_context_restore to restore compressed blocks by "
+            "block_id (empty id restores all) - idempotent, returning restores "
+            "count, store state, and a chip. Call school_context_status first "
+            "to list block ids."
+        ),
+        "annotations": {"idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "session": {
+                    "type": "string",
+                    "description": "Session id for scope isolation.",
+                },
+                "block_id": {
+                    "type": "string",
+                    "description": "Block id to restore (empty = latest).",
+                },
+            },
+        },
+    },
+    "school_observe": {
+        "description": (
+            "Use school_observe to record an agent-behaviour observation and "
+            "extract a pattern. Categories: tool_call, error, pattern, research, "
+            "execute. Fail-open on errors."
+        ),
+        "annotations": {"idempotent_hint": False},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "observation": {"type": "string", "description": "What was observed."},
+                "category": {
+                    "type": "string",
+                    "description": "tool_call | error | pattern | research | execute.",
+                },
+                "evidence": {"type": "object", "description": "Optional evidence."},
+            },
+            "required": ["observation"],
+        },
+    },
+    "school_goal": {
+        "description": (
+            "Use school_goal to manage learning goals: set / status / complete / "
+            "block / pause / resume / clear / history."
+        ),
+        "annotations": {"idempotent_hint": False},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": (
+                        "set | status | complete | block | pause | resume"
+                        " | clear | history"
+                    ),
+                },
+                "goal_id": {"type": "string", "description": "Goal id."},
+                "objective": {"type": "string", "description": "Goal objective (set)."},
+                "success_criteria": {"type": "string", "description": "Success criteria (set)."},
+                "max_turns": {"type": "number", "description": "Max turns (set)."},
+                "constraints": {"type": "string", "description": "Constraints or blocker text."},
+            },
+            "required": ["action"],
+        },
+    },
+    "school_research": {
+        "description": (
+            "Use school_research to research a query against internal knowledge "
+            "first, then distill learnings. SCHOOL_RESEARCH=0 disables it."
+        ),
+        "annotations": {"read_only_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Research query."},
+                "depth": {"type": "string", "description": "shallow | deep."},
+                "format": {"type": "string", "description": "summary | detailed."},
+            },
+            "required": ["query"],
+        },
+    },
+    "school_explore": {
+        "description": (
+            "Use school_explore to explore a codebase path and extract structure, "
+            "patterns, and conventions."
+        ),
+        "annotations": {"read_only_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "target": {"type": "string", "description": "Relative or absolute path."},
+                "depth": {"type": "string", "description": "file | dir."},
+                "focus": {"type": "string", "description": "structure | patterns."},
+            },
+            "required": ["target"],
+        },
+    },
+    "school_progress": {
+        "description": (
+            "Use school_progress to track learning progress with visual bars. "
+            "Actions: write (set items), read (get bars + items)."
+        ),
+        "annotations": {"idempotent_hint": False},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "write | read"},
+                "items": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": 'Items: [{"content": str, "status": str}]',
+                },
+                "context": {"type": "string", "description": "Optional context string."},
+            },
+            "required": ["action"],
+        },
+    },
+    "school_session": {
+        "description": (
+            "Use school_session to manage session lifecycle: create / resume / "
+            "summarize / export / list."
+        ),
+        "annotations": {"idempotent_hint": False},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "description": "create | resume | summarize | export | list",
+                },
+                "session_id": {"type": "string", "description": "Session id."},
+                "focus": {"type": "string", "description": "Session focus (create)."},
+            },
+            "required": ["action"],
+        },
+    },
+    "school_execute": {
+        "description": (
+            "Use school_execute to run a shell command and learn from its "
+            "outcome. Set learn=false to skip learning. SCHOOL_EXECUTE=0 disables it."
+        ),
+        "annotations": {"idempotent_hint": False},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "command": {"type": "string", "description": "Shell command to run."},
+                "learn": {"type": "boolean", "description": "Record observation (default true)."},
+                "context": {"type": "string", "description": "Context string."},
+            },
+            "required": ["command"],
+        },
+    },
+    "school_navigate": {
+        "description": (
+            "Use school_navigate to read, list, search, or map project files. "
+            "Actions: read | list | search | map."
+        ),
+        "annotations": {"read_only_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "read | list | search | map"},
+                "path": {"type": "string", "description": "Relative or absolute path."},
+                "pattern": {"type": "string", "description": "Regex pattern (search)."},
+                "depth": {"type": "number", "description": "Tree depth (map, default 3)."},
+            },
+            "required": ["action"],
+        },
+    },
+    "school_workflow": {
+        "description": (
+            "Use school_workflow to run SDD workflows (tdd, debug, brainstorm, "
+            "review). Actions: start | advance | status | abort | list | define | "
+            "block. Persists state and learns from run history."
+        ),
+        "annotations": {"idempotent_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Workflow name: tdd | debug | brainstorm | review",
+                },
+                "action": {
+                    "type": "string",
+                    "description": "start | advance | status | abort | list | define | block",
+                },
+                "phase": {"type": "string", "description": "Phase name or comma-separated for define."},
+                "notes": {"type": "string", "description": "Notes for the current phase."},
+            },
+            "required": ["name"],
+        },
+    },
+    "school_docs": {
+        "description": (
+            "Use school_docs to fetch library/framework docs with local caching. "
+            "Returns skeletonized content for token efficiency. Supports version "
+            "pinning via library + version."
+        ),
+        "annotations": {"read_only_hint": True},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Documentation query."},
+                "library": {"type": "string", "description": "Library name."},
+                "version": {"type": "string", "description": "Library version for pinning."},
+                "use_cache": {
+                    "type": "boolean",
+                    "description": "Use cached docs if available (default true).",
+                },
+            },
+            "required": ["query"],
+        },
+    },
 }
 
 

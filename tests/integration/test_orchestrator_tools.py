@@ -6,7 +6,7 @@ class TestFullPipeline:
     def test_all_tools_registered(self):
         orch = create_orchestrator()
         tools = orch._registry.list_tools()
-        assert len(tools) == 10
+        assert len(tools) == 22  # 10 original + 7 skillgen + 5 github (Phase 2)
 
     def test_dispatch_status(self):
         orch = create_orchestrator()

@@ -1,4 +1,4 @@
-"""Integration tests for the School MCP server over a real stdio connection.
+﻿"""Integration tests for the School MCP server over a real stdio connection.
 
 Each test spawns `python -m school.mcp` as a genuine subprocess and talks
 to it through the official MCP client — covering startup, discovery, real
@@ -40,6 +40,21 @@ EXPECTED_TOOLS = [
     "school_route_stats",
     "school_read",
     "school_grep",
+    "school_skill_list",
+    "school_skill_search",
+    "school_skill_create",
+    "school_skill_use",
+    "school_skill_feedback",
+    "school_skill_status",
+    "school_skill_evolve",
+    "school_skill_search_github",
+    "school_skill_discover",
+    "school_skill_analyze_external",
+    "school_skill_compare",
+    "school_skill_import",
+    "school_context_status",
+    "school_context_compress",
+    "school_context_restore",
 ]
 
 
