@@ -9,6 +9,7 @@ model call. The model judges - 1A-2Z executes and stays in control.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from core.routing.v26.experience import Experience, ExperienceOutcome
@@ -20,15 +21,21 @@ from core.skillgen.generate import build_manual_skill, generalize
 from core.skillgen.judge import Judgment, ModelJudge, build_judgment_prompt, parse_judgment
 from core.skillgen.matcher import match
 from core.skillgen.registry import SkillRegistry, similarity
-from core.skillgen.types import Skill, SkillState, scope_visible
+from core.skillgen.types import Skill, SkillState, safe_float, safe_int, safe_str, scope_visible
 from core.skillgen.validate import validate_skill
 
 # Deterministic gate: judgment only when score clears the threshold.
 JUDGE_MIN_SCORE = MIN_CANDIDATE_SCORE
 
 
-def _task_key(task: str, experience: Experience) -> str:
-    key = task or experience.session.session_id if experience.session else task
+def _task_key(task: Any, experience: Experience) -> str:
+    key = safe_str(task, 200)
+    if not key:
+        try:
+            session = experience.session
+            key = safe_str(session.session_id, 200) if session is not None else ""
+        except Exception:  # noqa: BLE001 - hostile experience
+            key = ""
     return (key or "default")[:64]
 
 
@@ -65,7 +72,10 @@ class SkillPipeline:
         """Similarity of the experience text to the closest existing skill."""
         probe = Skill(
             name="probe",
-            description=f"{experience.observation} {experience.action}",
+            description=(
+                f"{safe_str(experience.observation, 2000)} "
+                f"{safe_str(experience.action, 2000)}"
+            ),
             purpose="",
         )
         best_sim, best_name = 0.0, ""
@@ -77,7 +87,7 @@ class SkillPipeline:
 
     def _self_test(self, skill: Skill) -> tuple[bool, str]:
         """Testing stage: the skill must retrieve for its own triggers."""
-        query = " ".join(skill.triggers[:2]) or skill.name
+        query = " ".join(safe_str(t, 100) for t in skill.triggers[:2]) or safe_str(skill.name, 100)
         hits = match(self.registry, query, agent_id=skill.agent_id,
                      project_id=skill.project_id, session_id=skill.session_id,
                      include_unusable=True, limit=5)
@@ -96,7 +106,35 @@ class SkillPipeline:
         project_id: str = "",
         session_id: str = "",
     ) -> dict[str, Any]:
-        """Run the full pipeline for one experience (cheap reject first)."""
+        """Run the full pipeline for one experience (cheap reject first).
+
+        Fail-open: any hostile input yields a structured rejection report.
+        """
+        try:
+            return self._observe(experience, task, agent_id, project_id, session_id)
+        except Exception as exc:  # noqa: BLE001 - fail open at the stage boundary
+            try:
+                eid = safe_str(experience.experience_id, 200)
+            except Exception:  # noqa: BLE001 - hostile experience object
+                eid = ""
+            report = {
+                "experience_id": eid,
+                "candidate": False,
+                "action": "rejected:internal_error",
+                "error": type(exc).__name__,
+            }
+            with contextlib.suppress(Exception):
+                self.registry.log_event("internal_error", f"observe: {exc}"[:300])
+            return report
+
+    def _observe(
+        self,
+        experience: Experience,
+        task: str = "",
+        agent_id: str = "opencode",
+        project_id: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any]:
         report: dict[str, Any] = {"experience_id": experience.experience_id}
         task_key = _task_key(task, experience)
 
@@ -247,8 +285,8 @@ class SkillPipeline:
         """Convenience: run observe() from a serialized experience."""
         try:
             experience = Experience.from_dict(data)
-        except (KeyError, TypeError, ValueError) as exc:
-            return {"action": "rejected:bad_experience", "error": str(exc)}
+        except Exception as exc:  # noqa: BLE001 - hostile payload: graceful reject
+            return {"action": "rejected:bad_experience", "error": type(exc).__name__}
         return self.observe(experience, task=task, **kw)
 
     # -- explicit agent path (skill_create) --------------------------------
@@ -261,6 +299,20 @@ class SkillPipeline:
         session_id: str = "",
     ) -> dict[str, Any]:
         """Agent-authored skill: validated + tested, never trusted raw."""
+        try:
+            return self._create_manual(payload, agent_id, project_id, session_id)
+        except Exception as exc:  # noqa: BLE001 - fail open: graceful rejection
+            return {"ok": False, "action": "rejected:internal_error",
+                    "reason": f"internal_error:{type(exc).__name__}"}
+
+    def _create_manual(
+        self,
+        payload: dict[str, Any],
+        agent_id: str = "opencode",
+        project_id: str = "",
+        session_id: str = "",
+    ) -> dict[str, Any]:
+        agent_id = safe_str(agent_id, 200) or "opencode"
         skill = build_manual_skill(payload, agent_id, project_id, session_id)
         if not skill.name:
             return {"ok": False, "action": "rejected:validation",
@@ -329,29 +381,34 @@ class SkillPipeline:
         session_id: str = "",
     ) -> dict[str, Any]:
         """Retrieve a skill for use (scope-checked) and record the use."""
-        if name:
-            skill = self.registry.get(name)
-            if skill is None:
-                return {"ok": False, "reason": "not_found", "skill": name}
-            if not scope_visible(skill, agent_id, project_id, session_id):
-                return {"ok": False, "reason": "out_of_scope", "skill": name}
-            if skill.state not in {SkillState.ACTIVE, SkillState.PROVEN}:
-                return {"ok": False, "reason": f"state:{skill.state.value}",
-                        "skill": name}
-            skill.use_count += 1
-            skill.record("used", "retrieved for reuse")
-            self.registry.save()
-            return {"ok": True, "skill": skill.name, "state": skill.state.value,
-                    "confidence": skill.confidence, "version": skill.version,
-                    "procedure": list(skill.procedure),
-                    "triggers": list(skill.triggers),
-                    "constraints": list(skill.constraints),
-                    "markdown": skill.to_skill_md()}
-        if not query:
-            return {"ok": False, "reason": "name or query required"}
-        hits = match(self.registry, query, agent_id=agent_id,
-                     project_id=project_id, session_id=session_id, limit=5)
-        return {"ok": True, "matches": hits}
+        try:
+            name = safe_str(name, 200)
+            query = safe_str(query, 2000)
+            if name:
+                skill = self.registry.get(name)
+                if skill is None:
+                    return {"ok": False, "reason": "not_found", "skill": name}
+                if not scope_visible(skill, agent_id, project_id, session_id):
+                    return {"ok": False, "reason": "out_of_scope", "skill": name}
+                if skill.state not in {SkillState.ACTIVE, SkillState.PROVEN}:
+                    return {"ok": False, "reason": f"state:{skill.state.value}",
+                            "skill": name}
+                skill.use_count += 1
+                skill.record("used", "retrieved for reuse")
+                self.registry.save()
+                return {"ok": True, "skill": skill.name, "state": skill.state.value,
+                        "confidence": skill.confidence, "version": skill.version,
+                        "procedure": list(skill.procedure),
+                        "triggers": list(skill.triggers),
+                        "constraints": list(skill.constraints),
+                        "markdown": skill.to_skill_md()}
+            if not query:
+                return {"ok": False, "reason": "name or query required"}
+            hits = match(self.registry, query, agent_id=agent_id,
+                         project_id=project_id, session_id=session_id, limit=5)
+            return {"ok": True, "matches": hits}
+        except Exception as exc:  # noqa: BLE001 - fail open
+            return {"ok": False, "reason": f"internal_error:{type(exc).__name__}"}
 
     def feedback(
         self,
@@ -360,67 +417,90 @@ class SkillPipeline:
         note: str = "",
         agent_id: str = "opencode",
     ) -> dict[str, Any]:
-        skill = self.registry.get(name)
-        if skill is None:
-            return {"ok": False, "reason": "not_found", "skill": name}
-        apply_feedback(skill, success, note)
-        self.registry.log_event(
-            "feedback", f"{skill.name}: {'+' if success else '-'} "
-                        f"conf={skill.confidence:.3f} state={skill.state.value}"
-        )
-        self.registry.save()
-        return {"ok": True, "skill": skill.name, "state": skill.state.value,
-                "confidence": skill.confidence,
-                "success_count": skill.success_count,
-                "failure_count": skill.failure_count}
+        try:
+            name = safe_str(name, 200)
+            skill = self.registry.get(name)
+            if skill is None:
+                return {"ok": False, "reason": "not_found", "skill": name}
+            try:
+                truth = bool(success)
+            except Exception:  # noqa: BLE001 - hostile __bool__
+                truth = False
+            apply_feedback(skill, truth, safe_str(note, 500))
+            self.registry.log_event(
+                "feedback", f"{skill.name}: {'+' if truth else '-'} "
+                            f"conf={safe_float(skill.confidence, 0.5):.3f} "
+                            f"state={skill.state.value}"
+            )
+            self.registry.save()
+            return {"ok": True, "skill": skill.name, "state": skill.state.value,
+                    "confidence": skill.confidence,
+                    "success_count": skill.success_count,
+                    "failure_count": skill.failure_count}
+        except Exception as exc:  # noqa: BLE001 - fail open
+            return {"ok": False, "reason": f"internal_error:{type(exc).__name__}"}
 
     def evolve(self, action: str = "consolidate", name: str = "",
                changes: dict[str, Any] | None = None,
                agent_id: str = "opencode") -> dict[str, Any]:
         """Explicit evolution: consolidate duplicates or revise a skill."""
-        if action == "consolidate":
-            merged = consolidate(self.registry)
-            return {"ok": True, "merged": merged, "count": len(merged)}
-        if action == "revise":
-            skill = self.registry.get(name)
-            if skill is None:
-                return {"ok": False, "reason": "not_found", "skill": name}
-            if not changes:
-                return {"ok": False, "reason": "changes required"}
-            skill = revise(skill, changes, actor=agent_id)
-            ok, reason = validate_skill(skill)
-            if not ok:
-                skill.state = SkillState.CANDIDATE
+        try:
+            action = safe_str(action, 32)
+            name = safe_str(name, 200)
+            agent_id = safe_str(agent_id, 200) or "opencode"
+            if action == "consolidate":
+                merged = consolidate(self.registry)
+                return {"ok": True, "merged": merged, "count": len(merged)}
+            if action == "revise":
+                skill = self.registry.get(name)
+                if skill is None:
+                    return {"ok": False, "reason": "not_found", "skill": name}
+                if not isinstance(changes, dict) or not changes:
+                    return {"ok": False, "reason": "changes required"}
+                skill = revise(skill, changes, actor=agent_id)
+                ok, reason = validate_skill(skill)
+                if not ok:
+                    skill.state = SkillState.CANDIDATE
+                    self.registry.save()
+                    return {"ok": False, "action": "rejected:validation",
+                            "reason": reason}
                 self.registry.save()
-                return {"ok": False, "action": "rejected:validation",
-                        "reason": reason}
-            self.registry.save()
-            return {"ok": True, "action": "revised", "skill": skill.name,
-                    "version": skill.version}
-        if action == "recompute":
-            states = {s.name: evaluate_lifecycle(s).value
-                      for s in self.registry.all()}
-            self.registry.save()
-            return {"ok": True, "states": states}
-        return {"ok": False, "reason": f"unknown action: {action}"}
+                return {"ok": True, "action": "revised", "skill": skill.name,
+                        "version": skill.version}
+            if action == "recompute":
+                states = {}
+                for s in self.registry.all():
+                    states[safe_str(s.name, 100)] = evaluate_lifecycle(s).value
+                self.registry.save()
+                return {"ok": True, "states": states}
+            return {"ok": False, "reason": f"unknown action: {action}"}
+        except Exception as exc:  # noqa: BLE001 - fail open
+            return {"ok": False, "reason": f"internal_error:{type(exc).__name__}"}
 
     def status(self) -> dict[str, Any]:
         """Registry + budget observability (skill_status)."""
-        by_state: dict[str, int] = {}
-        for skill in self.registry.all():
-            by_state[skill.state.value] = by_state.get(skill.state.value, 0) + 1
-        from core.skillgen.judge import default_judge
+        try:
+            by_state: dict[str, int] = {}
+            for skill in self.registry.all():
+                key = safe_str(skill.state.value, 32)
+                by_state[key] = by_state.get(key, 0) + 1
+            from core.skillgen.judge import default_judge
 
-        judge = self._judge if self._judge is not None else default_judge()
-        return {
-            "ok": True,
-            "skills": len(self.registry.all()),
-            "by_state": by_state,
-            "model_calls_total": int(self.registry.stats.get("model_calls_total", 0)),
-            "judge_configured": judge is not None,
-            "storage": str(self.registry.path),
-            "recent_events": list(self.registry.stats.get("events", []))[-5:],
-        }
+            judge = self._judge if self._judge is not None else default_judge()
+            events = self.registry.stats.get("events", [])
+            if not isinstance(events, list):
+                events = []
+            return {
+                "ok": True,
+                "skills": len(self.registry.all()),
+                "by_state": by_state,
+                "model_calls_total": safe_int(self.registry.stats.get("model_calls_total", 0)),
+                "judge_configured": judge is not None,
+                "storage": safe_str(self.registry.path, 500),
+                "recent_events": SkillRegistry._safe_events(events)[-5:],
+            }
+        except Exception as exc:  # noqa: BLE001 - fail open
+            return {"ok": False, "reason": f"internal_error:{type(exc).__name__}"}
 
 
 def quick_observe(

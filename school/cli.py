@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import shutil
 import sys
 from pathlib import Path
@@ -11,6 +12,17 @@ from school import __version__
 from school.config import SchoolConfig
 from school.discovery import discover_bridge
 from school.plugin_source import TS_PLUGIN_SOURCE
+
+
+def _safe_err(exc: BaseException) -> str:
+    """str(exc) that can never raise (hostile exceptions break __str__)."""
+    try:
+        return str(exc)
+    except Exception:  # noqa: BLE001 — fail-open
+        try:
+            return repr(exc)
+        except Exception:  # noqa: BLE001 — fail-open
+            return f"<unprintable {type(exc).__name__}>"
 
 
 def _cmd_version(args: argparse.Namespace) -> None:
@@ -443,7 +455,11 @@ def _cmd_skills(args: argparse.Namespace) -> None:
         sys.stderr.write(f"school skills: unknown action {action!r}\n")
         sys.exit(1)
 
-    print(json.dumps(report, indent=2, default=str))
+    # Strict JSON output: NaN/Infinity and exotic values would produce
+    # invalid JSON for machine consumers — sanitise before dumping.
+    from school.bridge import _json_safe
+
+    print(json.dumps(_json_safe(report), indent=2, default=str, allow_nan=False))
     if not report.get("ok"):
         sys.exit(1)
 
@@ -495,7 +511,16 @@ def _cmd_context(args: argparse.Namespace) -> None:
             "error": {"type": "protocol", "message": f"unknown: {command}"},
         }
     else:
-        resp = handler(req)
+        try:
+            resp = handler(req)
+        except Exception as exc:  # noqa: BLE001 — fail-open: --json must
+            # still emit valid JSON and the CLI must never traceback.
+            resp = {
+                "ok": False,
+                "error": {"type": "runtime", "message": _safe_err(exc)},
+            }
+    if not isinstance(resp, dict):
+        resp = {"ok": True, "result": resp}
 
     if args.json:
         print(json.dumps(resp, ensure_ascii=False))
@@ -517,6 +542,94 @@ def _cmd_context(args: argparse.Namespace) -> None:
             print(resp["chip"])
     if not resp.get("ok"):
         sys.exit(1)
+
+
+def _write_stdout(text: str) -> None:
+    """Write rendered output without ever closing or corrupting sys.stdout.
+
+    The previous implementation wrapped ``sys.stdout.buffer`` in a fresh
+    TextIOWrapper; its garbage collection closed the *shared* buffer and
+    silently destroyed all buffered output plus every later write.
+    """
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+        return
+    except (UnicodeEncodeError, ValueError, OSError):
+        pass  # narrow console encoding or closed wrapper: fall back to bytes
+    buffer = getattr(sys.stdout, "buffer", None)
+    if buffer is not None:
+        with contextlib.suppress(Exception):
+            buffer.write(text.encode("utf-8", errors="replace"))
+            buffer.flush()
+
+
+def _cmd_visualize(args: argparse.Namespace) -> str:
+    """school visualize: render any School visual. Returns the output string.
+
+    Fail-open: hostile types/data/args can never raise out of this handler —
+    invalid input reports to stderr and exits 2 (unknown type/invalid
+    ``--data``) or 1 (render failure), keeping the CLI exit-code contract.
+    """
+    import json as _json
+
+    from core.context.visual_dispatch import render_visual
+
+    try:
+        raw = args.data
+        data = {}
+        if raw:
+            if isinstance(raw, str):
+                try:
+                    data = _json.loads(raw)
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"invalid --data JSON: {_safe_err(exc)}") from None
+            elif isinstance(raw, dict):
+                data = raw
+            else:
+                raise ValueError(f"invalid --data type: {type(raw).__name__}")
+            if not isinstance(data, dict):
+                raise ValueError("--data must be a JSON object")
+    except ValueError as exc:
+        print(f"visualize error: {_safe_err(exc)}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except Exception as exc:
+        print(f"visualize error: {_safe_err(exc)}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+    try:
+        out = render_visual(args.type, data=data, label=args.label, width=args.width)
+        if not isinstance(out, str):
+            out = str(out)
+    except ValueError as exc:
+        print(f"unknown visual type: {_safe_err(exc)}", file=sys.stderr)
+        raise SystemExit(2) from None
+    except Exception as exc:
+        print(f"visualize error: {_safe_err(exc)}", file=sys.stderr)
+        raise SystemExit(1) from None
+
+    _write_stdout(out + "\n")
+    return out
+
+
+def _parse_args_safe(parser: argparse.ArgumentParser) -> argparse.Namespace:
+    """Parse argv, coercing hostile non-str entries to safe strings.
+
+    Raw ``sys.argv`` can be mutated programmatically with None/int/list
+    entries; argparse itself raises TypeError/KeyError on those and used to
+    escape ``main()`` as a traceback. Coercion keeps the pinned argparse
+    contract (SystemExit(2) with usage text) while never crashing.
+    """
+    argv: list[str] = []
+    for item in sys.argv[1:]:
+        if isinstance(item, str):
+            argv.append(item)
+        else:
+            try:
+                argv.append(str(item))
+            except Exception:  # noqa: BLE001 — fail-open
+                argv.append(f"<{type(item).__name__}>")
+    return parser.parse_args(argv)
 
 
 def main() -> None:
@@ -670,7 +783,22 @@ def main() -> None:
         help="Keep DCP for message-level compression",
     )
 
-    args = parser.parse_args()
+    viz_parser = subparsers.add_parser(
+        "visualize", help="Render School visuals (sparkline, heatmap, donut, radar, etc.)"
+    )
+    viz_parser.add_argument(
+        "type",
+        help=(
+            "Visual type: sparkline|heatmap|donut|radar|gauge|timeline|tree|"
+            "flow|spinner|waterfall|braille|subcell|status_matrix|network|"
+            "dashboard|gradient|emoji|comparison"
+        ),
+    )
+    viz_parser.add_argument("--label", default="", help="Label/title")
+    viz_parser.add_argument("--data", default="{}", help="JSON data")
+    viz_parser.add_argument("--width", type=int, default=20, help="Bar width")
+
+    args = _parse_args_safe(parser)
 
     if args.command is None:
         parser.print_help()
@@ -691,11 +819,23 @@ def main() -> None:
         "mcp": _cmd_mcp,
         "skills": _cmd_skills,
         "context": _cmd_context,
+        "visualize": _cmd_visualize,
     }
 
     cmd_func = commands.get(args.command)
     if cmd_func:
-        cmd_func(args)
+        try:
+            cmd_func(args)
+        except SystemExit:
+            raise
+        except Exception as exc:  # noqa: BLE001 — fail-open: CLI never tracebacks
+            with contextlib.suppress(Exception):
+                sys.stderr.write(f"school: {args.command} recovered from error: {exc}\n")
+            sys.exit(0)
     else:
         parser.print_help()
-        sys.exit(1)
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

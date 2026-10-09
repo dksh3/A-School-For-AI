@@ -9,7 +9,6 @@ Usage:
 from __future__ import annotations
 
 import json
-import math
 import sys
 import time
 from dataclasses import dataclass, field
@@ -25,7 +24,6 @@ from core.learner.confidence import ConfidenceConfig, ConfidenceLevel  # noqa: E
 from core.learner.conflict import ConflictConfig  # noqa: E402
 from core.learner.learner_v2 import HybridSimilarityLearner  # noqa: E402
 from core.learner.retrieval_scorer import ScorerConfig  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Result tracking
@@ -119,7 +117,7 @@ def measure_confidence_calibration(
 
     # Brier score
     brier = 0.0
-    for conf, corr in zip(confidences, correct_flags):
+    for conf, corr in zip(confidences, correct_flags, strict=False):
         brier += (conf - (1.0 if corr else 0.0)) ** 2
     brier /= total if total else 1
 
@@ -127,8 +125,8 @@ def measure_confidence_calibration(
     mean_conf = sum(confidences) / len(confidences) if confidences else 0
 
     # Mean confidence when correct vs incorrect
-    correct_confs = [c for c, k in zip(confidences, correct_flags) if k]
-    incorrect_confs = [c for c, k in zip(confidences, correct_flags) if not k]
+    correct_confs = [c for c, k in zip(confidences, correct_flags, strict=False) if k]
+    incorrect_confs = [c for c, k in zip(confidences, correct_flags, strict=False) if not k]
     mean_correct = sum(correct_confs) / len(correct_confs) if correct_confs else 0
     mean_incorrect = sum(incorrect_confs) / len(incorrect_confs) if incorrect_confs else 0
 
@@ -140,7 +138,7 @@ def measure_confidence_calibration(
         low, high = bin_boundaries[i], bin_boundaries[i + 1]
         in_bin = [
             (conf, corr)
-            for conf, corr in zip(confidences, correct_flags)
+            for conf, corr in zip(confidences, correct_flags, strict=False)
             if low <= conf < high
         ]
         if in_bin:
@@ -318,11 +316,16 @@ def run_benchmarks() -> BenchmarkSuite:
         confidence_config=ConfidenceConfig(),
         conflict_config=ConflictConfig(input_similarity_threshold=0.5),
     )
-    v23_conflict.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-    v23_conflict.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+    v23_conflict.learn(LearningInput(
+        observation={"input": "sort a list", "output": "use sorted()"}))
+    v23_conflict.learn(LearningInput(
+        observation={"input": "sort a list", "output": "use list.sort()"}))
     r_conflict = v23_conflict.predict("sort a list")
 
-    conflict_reduces = not r_conflict.has_conflict or r_conflict.confidence < r_no_conflict.confidence
+    conflict_reduces = (
+        not r_conflict.has_conflict
+        or r_conflict.confidence < r_no_conflict.confidence
+    )
     suite.add(BenchmarkResult(
         name="Conflict Reduces Confidence",
         description="Conflicting memories should lower confidence",
@@ -398,7 +401,8 @@ def run_benchmarks() -> BenchmarkSuite:
         )
         loaded_result = loaded.predict("sort list")
         persist_ok = loaded_result.output == "use sorted()"
-        persist_conf = loaded._confidence_config is not None and loaded._confidence_config.prior_strength == 8.0
+        persist_conf = (loaded._confidence_config is not None
+                        and loaded._confidence_config.prior_strength == 8.0)
 
     suite.add(BenchmarkResult(
         name="V2.3 Persistence",

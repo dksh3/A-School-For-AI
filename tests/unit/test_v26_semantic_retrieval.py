@@ -17,8 +17,8 @@ def _make_entry(content: str, agent_id: str = "test") -> MemoryEntry:
 
 def test_exact_query_returns_high_score():
     """An entry matching the query exactly should score highest."""
-    from core.routing.v26.semantic_retrieval import scored_query
     from core.learner.feature_extractor import FeatureExtractor
+    from core.routing.v26.semantic_retrieval import scored_query
 
     entries = [
         _make_entry("python is a programming language"),
@@ -36,8 +36,8 @@ def test_exact_query_returns_high_score():
 
 def test_paraphrased_query_ranks_related_entry_higher():
     """A paraphrased query should rank semantically similar entries higher."""
-    from core.routing.v26.semantic_retrieval import scored_query
     from core.learner.feature_extractor import FeatureExtractor
+    from core.routing.v26.semantic_retrieval import scored_query
 
     entries = [
         _make_entry("the cat sat on the mat"),
@@ -57,8 +57,8 @@ def test_paraphrased_query_ranks_related_entry_higher():
 
 def test_empty_query_returns_empty():
     """Empty query should return empty results."""
-    from core.routing.v26.semantic_retrieval import scored_query
     from core.learner.feature_extractor import FeatureExtractor
+    from core.routing.v26.semantic_retrieval import scored_query
 
     entries = [_make_entry("some content")]
     extractor = FeatureExtractor()
@@ -68,8 +68,8 @@ def test_empty_query_returns_empty():
 
 def test_limit_respects_bound():
     """Results should not exceed the limit."""
-    from core.routing.v26.semantic_retrieval import scored_query
     from core.learner.feature_extractor import FeatureExtractor
+    from core.routing.v26.semantic_retrieval import scored_query
 
     entries = [_make_entry(f"content number {i}") for i in range(20)]
     extractor = FeatureExtractor()
@@ -82,8 +82,8 @@ def test_limit_respects_bound():
 
 def test_no_entries_returns_empty():
     """Empty entry list should return empty results."""
-    from core.routing.v26.semantic_retrieval import scored_query
     from core.learner.feature_extractor import FeatureExtractor
+    from core.routing.v26.semantic_retrieval import scored_query
 
     extractor = FeatureExtractor()
     results = scored_query([], "query", extractor, limit=5)
@@ -92,8 +92,8 @@ def test_no_entries_returns_empty():
 
 def test_scoring_is_deterministic():
     """Same inputs should always produce same ranking."""
-    from core.routing.v26.semantic_retrieval import scored_query
     from core.learner.feature_extractor import FeatureExtractor
+    from core.routing.v26.semantic_retrieval import scored_query
 
     entries = [
         _make_entry("alpha programming language"),

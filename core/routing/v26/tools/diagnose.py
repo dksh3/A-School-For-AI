@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from core.routing.v26.memory_manager import MemoryManager
-from core.routing.v26.tools.base import Tool, ToolResult
+from core.routing.v26.tools.base import Tool, ToolResult, fail_open
 
 
 class DiagnoseTool(Tool):
@@ -24,6 +24,7 @@ class DiagnoseTool(Tool):
     def schema(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
 
+    @fail_open
     def execute(self, **kwargs) -> ToolResult:
         stats = self._manager.stats()
 

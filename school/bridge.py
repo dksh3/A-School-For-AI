@@ -16,7 +16,9 @@ Commands:
 
 from __future__ import annotations
 
+import contextlib
 import json
+import math
 import sys
 from typing import Any
 
@@ -47,6 +49,95 @@ from school.skeleton import optimize
 _manager: MemoryManager | None = None
 _storage: ScopeIsolatedStorage | None = None
 _init_error: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Fail-open text/JSON sanitising helpers
+# ---------------------------------------------------------------------------
+
+
+def _err_text(exc: BaseException) -> str:
+    """str(exc) that can never raise (hostile exceptions may break __str__)."""
+    try:
+        return str(exc)
+    except Exception:  # noqa: BLE001 — fail-open
+        try:
+            return repr(exc)
+        except Exception:  # noqa: BLE001 — fail-open
+            return f"<unprintable {type(exc).__name__}>"
+
+
+def _safe_str(value: Any) -> str:
+    """str(value) that can never raise (hostile objects break __str__/__repr__)."""
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001 — fail-open
+        try:
+            return repr(value)
+        except Exception:  # noqa: BLE001 — fail-open
+            return f"<unprintable {type(value).__name__}>"
+
+
+def _scrub_surrogates(text: str) -> str:
+    """Replace lone UTF-16 surrogates (unencodable on the JSON wire)."""
+    try:
+        text.encode("utf-8")
+        return text
+    except UnicodeEncodeError:
+        return "".join(
+            "\ufffd" if 0xD800 <= ord(ch) <= 0xDFFF else ch for ch in text
+        )
+
+
+def _json_safe(value: Any, _depth: int = 0, _budget: list[int] | None = None) -> Any:
+    """Normalise *value* into strictly serialisable JSON data (fail-open).
+
+    Non-finite floats become null, exotic objects become safe strings, lone
+    surrogates are scrubbed, hostile container subclasses are iterated
+    defensively. The result is always accepted by json.dumps(allow_nan=False).
+    A depth cutoff plus a node budget bound the work even for shared/cyclic
+    graphs (JSON cannot represent sharing, so truncation is lossless-by-design).
+    """
+    if _budget is None:
+        _budget = [50_000]
+    _budget[0] -= 1
+    if _budget[0] < 0:
+        return "<max-nodes>"
+    if _depth > 25:
+        return "<max-depth>"
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, str):
+        return _scrub_surrogates(value)
+    if isinstance(value, dict):
+        try:
+            items = list(dict.items(value))
+        except Exception:  # noqa: BLE001 — hostile mapping subclass
+            return f"<unserializable {type(value).__name__}>"
+        out: dict[str, Any] = {}
+        for key, val in items:
+            skey = key if isinstance(key, str) else _safe_str(key)
+            out[_scrub_surrogates(skey)] = _json_safe(val, _depth + 1, _budget)
+        return out
+    if isinstance(value, (list, tuple)):
+        try:
+            items = list(value)
+        except Exception:  # noqa: BLE001 — hostile sequence subclass
+            return f"<unserializable {type(value).__name__}>"
+        return [_json_safe(item, _depth + 1, _budget) for item in items]
+    if isinstance(value, (set, frozenset)):
+        try:
+            items = list(value)
+        except Exception:  # noqa: BLE001 — hostile set subclass
+            return f"<unserializable {type(value).__name__}>"
+        return sorted(
+            (_json_safe(item, _depth + 1, _budget) for item in items), key=_safe_str
+        )
+    return _safe_str(value)
 
 
 def _init_manager(worktree: str) -> MemoryManager:
@@ -266,10 +357,21 @@ def _get_orchestrator(worktree=""):
     return _orchestrator
 
 def _dispatch_to_orchestrator(tool_name, req):
-    orch = _get_orchestrator(req.get("worktree", ""))
-    params = {k: v for k, v in req.items() if k != "command"}
-    result = orch.dispatch(tool_name, **params)
-    return {"ok": result.success, "result": result.data, "errors": result.errors}
+    """Dispatch to the orchestrator. FAIL-OPEN: never raises, always returns a
+    valid dict so every school_* tool is impossible to fail at the bridge layer."""
+    try:
+        orch = _get_orchestrator(req.get("worktree", ""))
+        params = {k: v for k, v in req.items() if k != "command"}
+        result = orch.dispatch(tool_name, **params)
+        return {"ok": result.success, "result": result.data, "errors": result.errors}
+    except Exception as exc:  # noqa: BLE001 — fail-open by design
+        message = _err_text(exc)
+        return {
+            "ok": False,
+            "result": {},
+            "errors": [f"{type(exc).__name__}: {message}"],
+            "error": {"type": "runtime", "message": message, "tool": tool_name},
+        }
 
 def _handle_learn(req): return _dispatch_to_orchestrator("school_remember", req)
 def _handle_diagnose(req): return _dispatch_to_orchestrator("school_diagnose", req)
@@ -541,13 +643,17 @@ def _handle_research(req: dict[str, Any]) -> dict[str, Any]:
     r = research(
         worktree=str(req.get("worktree", "") or "."),
         query=str(req.get("query", "") or ""),
-        depth=str(req.get("depth", "shallow") or "shallow"),
+        depth=str(req.get("depth", "standard") or "standard"),
         fmt=str(req.get("format", "summary") or "summary"),
+        cite=bool(req.get("cite", True)),
     )
     return {
         "ok": r.ok,
         "query": r.query,
+        "depth": r.depth,
+        "format": r.fmt,
         "findings": r.findings,
+        "citations": r.citations,
         "learnings": r.learnings,
         "source": r.source,
         **({"error": r.error} if r.error else {}),
@@ -615,11 +721,16 @@ def _handle_session(req: dict[str, Any]) -> dict[str, Any]:
 def _handle_execute(req: dict[str, Any]) -> dict[str, Any]:
     from core.agent.executor import execute
 
+    env = req.get("env")
     r = execute(
         worktree=str(req.get("worktree", "") or "."),
         command=str(req.get("cmd", "") or req.get("command", "") or ""),
         learn=bool(req.get("learn", True)),
         context=str(req.get("context", "") or ""),
+        timeout_ms=int(req.get("timeout_ms", 30000) or 30000),
+        cwd=(str(req.get("cwd")) if req.get("cwd") else None),
+        env={str(k): str(v) for k, v in env.items()} if isinstance(env, dict) else None,
+        max_output=int(req.get("max_output", 10000) or 10000),
     )
     return {
         "ok": r.ok,
@@ -629,6 +740,10 @@ def _handle_execute(req: dict[str, Any]) -> dict[str, Any]:
         "stderr": r.stderr[:2000],
         "learned": r.learned,
         "duration_ms": r.duration_ms,
+        "pid": r.pid,
+        "cwd": r.cwd,
+        "env_overrides": r.env_overrides,
+        "truncated": r.truncated,
         **({"error": r.error} if r.error else {}),
     }
 
@@ -698,6 +813,24 @@ def _handle_docs(req: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _handle_visualize(req: dict[str, Any]) -> dict[str, Any]:
+    """Render any School visual type. Works in CLI, OpenCode, and any agent."""
+    from core.context.visual_dispatch import render_visual
+
+    viz_type = str(req.get("type", "") or "dashboard")
+    label = str(req.get("label", "") or "")
+    data = req.get("data") or {}
+    width = int(req.get("width", 20) or 20)
+
+    try:
+        output = render_visual(viz_type, data=data, label=label, width=width)
+        return {"ok": True, "type": viz_type, "output": output}
+    except ValueError as exc:
+        return {"ok": False, "error": _err_text(exc)}
+    except Exception as exc:
+        return {"ok": False, "error": f"visualize error: {_err_text(exc)}"}
+
+
 _COMMANDS = {
     "status": _handle_status,
     "remember": _handle_remember,
@@ -738,39 +871,109 @@ _COMMANDS = {
     "navigate": _handle_navigate,
     "workflow": _handle_workflow,
     "docs": _handle_docs,
+    "visualize": _handle_visualize,
 }
 
 
 def main() -> None:
-    """Read JSON from stdin, dispatch command, write JSON to stdout."""
+    """Read JSON from stdin, dispatch command, write JSON to stdout.
+
+    FAIL-OPEN: every code path emits valid JSON and never raises. The bridge
+    is the single wire for all tools — it must be impossible to fail.
+    """
+    resp: dict[str, Any]
     try:
         raw = sys.stdin.read()
         req = json.loads(raw)
     except json.JSONDecodeError as exc:
-        resp = {"ok": False, "error": {"type": "protocol", "message": f"malformed JSON: {exc}"}}
-        json.dump(resp, sys.stdout)
+        resp = {
+            "ok": False,
+            "error": {"type": "protocol", "message": f"malformed JSON: {exc}"},
+            "result": {},
+        }
+        _safe_dump(resp)
         return
-    except Exception as exc:
-        resp = {"ok": False, "error": {"type": "protocol", "message": f"stdin read error: {exc}"}}
-        json.dump(resp, sys.stdout)
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        resp = {
+            "ok": False,
+            "error": {"type": "protocol", "message": f"stdin read error: {exc}"},
+            "result": {},
+        }
+        _safe_dump(resp)
+        return
+
+    # Coerce req to a dict no matter what JSON arrived.
+    if not isinstance(req, dict):
+        resp = {
+            "ok": False,
+            "error": {"type": "protocol", "message": "request must be a JSON object"},
+            "result": {},
+        }
+        _safe_dump(resp)
         return
 
     command = req.get("command", "")
-    handler = _COMMANDS.get(command)
+    # FAIL-OPEN: a non-string (e.g. list/dict) command is unhashable — it must
+    # degrade to the "unknown command" response, never a TypeError escape.
+    handler = _COMMANDS.get(command) if isinstance(command, str) else None
     if handler is None:
         resp = {
             "ok": False,
-            "error": {"type": "protocol", "message": f"unknown command: {command}"},
+            "error": {"type": "protocol", "message": f"unknown command: {_safe_str(command)}"},
+            "result": {"commands": sorted(_COMMANDS.keys())},
         }
-        json.dump(resp, sys.stdout)
+        _safe_dump(resp)
         return
 
     try:
         resp = handler(req)
-    except Exception as exc:
-        resp = {"ok": False, "error": {"type": "runtime", "message": str(exc)}}
+    except Exception as exc:  # noqa: BLE001 — fail-open: handler crash is not fatal
+        resp = {
+            "ok": False,
+            "error": {"type": "runtime", "message": _err_text(exc)},
+            "result": {},
+            "errors": [f"{type(exc).__name__}: {_err_text(exc)}"],
+        }
 
-    json.dump(resp, sys.stdout)
+    # Guarantee a well-formed response dict.
+    if not isinstance(resp, dict):
+        resp = {"ok": True, "result": resp}
+
+    try:
+        from core.context.visual_footer import add_visual_footer
+        resp = add_visual_footer(resp, command, req)
+    except Exception:  # noqa: BLE001 — fail-open: visuals never break a response
+        pass  # fail-open: visuals never break a response
+
+    _safe_dump(resp)
+
+
+def _safe_dump(resp: dict[str, Any]) -> None:
+    """Emit JSON to stdout, guaranteed to be valid strict JSON.
+
+    Serialisation happens fully in memory before anything is written, so a
+    failure can never leave partial output on the wire (the old streaming
+    json.dump corrupted stdout with half a response followed by the fallback
+    stub). Non-finite floats, lone surrogates and non-serialisable values are
+    sanitised first (see _json_safe) so the emitted document is RFC 8259
+    strict — the TypeScript plugin parses it with JSON.parse.
+    """
+    text: str | None = None
+    try:
+        text = json.dumps(_json_safe(resp), ensure_ascii=True, allow_nan=False)
+    except Exception:  # noqa: BLE001 — fall back to the minimal stub
+        text = None
+    if text is None:
+        try:
+            text = json.dumps(
+                {"ok": False, "error": {"type": "serialize"}}, allow_nan=False
+            )
+        except Exception:  # noqa: BLE001 — last-resort literal
+            text = '{"ok": false, "error": {"type": "serialize"}}'
+    with contextlib.suppress(Exception):
+        sys.stdout.write(text)
+    with contextlib.suppress(Exception):
+        sys.stdout.flush()
 
 
 if __name__ == "__main__":

@@ -17,6 +17,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from core.agent.observer import safe_str
+
+_DEFAULT_TIMEOUT_MS = 30000
+_MAX_TIMEOUT_MS = 3_600_000.0
+_DEFAULT_MAX_OUTPUT = 10000
+
 
 @dataclass
 class ExecuteResult:
@@ -91,6 +97,25 @@ def _kill_tree(proc: subprocess.Popen) -> None:
             proc.kill()
 
 
+def _to_int(value: Any, default: int) -> int:
+    """Coerce any value to int; never raises."""
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _to_timeout_s(value: Any) -> float:
+    """Coerce a hostile-or-valid timeout_ms into seconds; never raises."""
+    try:
+        timeout_s = float(value) / 1000.0
+    except Exception:
+        return _DEFAULT_TIMEOUT_MS / 1000.0
+    if timeout_s != timeout_s:  # NaN -> default
+        return _DEFAULT_TIMEOUT_MS / 1000.0
+    return min(max(0.001, timeout_s), _MAX_TIMEOUT_MS / 1000.0)
+
+
 def execute(
     worktree: Path | str,
     command: str,
@@ -109,30 +134,54 @@ def execute(
     evidence when supplied.
     """
     if os.environ.get("SCHOOL_EXECUTE", "") == "0":
-        return ExecuteResult(ok=True, command=command)
+        return ExecuteResult(ok=True, command=safe_str(command))
 
     if not isinstance(command, str) or not command.strip():
-        return ExecuteResult(ok=False, error="empty command")
+        return ExecuteResult(ok=False, command=safe_str(command), error="empty command")
 
     # Resolve the working directory: explicit cwd wins, else the worktree.
     if cwd is not None:
-        target = Path(cwd)
-        if not target.is_dir():
+        try:
+            target = Path(cwd)
+            is_dir = target.is_dir()
+        except Exception:
+            target, is_dir = None, False
+        if target is None or not is_dir:
             return ExecuteResult(
-                ok=False, command=command, error=f"cwd not found: {cwd}"
+                ok=False, command=command, error=f"cwd not found: {safe_str(cwd, 200)}"
             )
-        used_cwd: str | None = str(target.resolve())
+        try:
+            used_cwd: str | None = str(target.resolve())
+        except Exception:
+            used_cwd = safe_str(target, 300)
     else:
-        root = Path(worktree)
-        used_cwd = str(root.resolve()) if root.is_dir() else None
+        try:
+            root = Path(worktree)
+            used_cwd = str(root.resolve()) if root.is_dir() else None
+        except Exception:
+            used_cwd = None
 
     env_overrides: dict[str, str] = {}
     merged_env: dict[str, str] | None = None
-    if env:
-        env_overrides = {str(k): str(v) for k, v in env.items()}
-        merged_env = {**os.environ, **env_overrides}
+    if env is not None:
+        try:
+            raw_pairs = list(env.items())
+        except Exception:
+            raw_pairs = None
+        if raw_pairs is None:
+            return ExecuteResult(
+                ok=False, command=command, cwd=used_cwd, error="invalid env"
+            )
+        env_overrides = {safe_str(k, 200): safe_str(v) for k, v in raw_pairs}
+        if env_overrides:
+            merged_env = {**os.environ, **env_overrides}
 
-    limit = max(1, int(max_output))
+    limit = max(1, _to_int(max_output, _DEFAULT_MAX_OUTPUT))
+    wait_s = _to_timeout_s(timeout_ms)
+    try:
+        do_learn = bool(learn)
+    except Exception:
+        do_learn = False
     popen_kwargs: dict[str, Any] = {}
     if os.name != "nt":
         popen_kwargs["start_new_session"] = True
@@ -151,13 +200,13 @@ def execute(
             env=merged_env,
             **popen_kwargs,
         )
-    except OSError as exc:
+    except Exception as exc:  # OSError/ValueError (embedded NUL) are fail-open
         return ExecuteResult(
             ok=False,
             command=command,
             cwd=used_cwd,
             env_overrides=env_overrides,
-            error=str(exc),
+            error=safe_str(exc, 300) or type(exc).__name__,
         )
 
     out_capture = _Capture(limit)
@@ -171,7 +220,7 @@ def execute(
 
     timed_out = False
     try:
-        proc.wait(timeout=max(0.001, timeout_ms / 1000))
+        proc.wait(timeout=wait_s)
     except subprocess.TimeoutExpired:
         timed_out = True
         _kill_tree(proc)
@@ -184,19 +233,19 @@ def execute(
     exit_code = proc.returncode if proc.returncode is not None else -1
 
     learned = ""
-    if learn:
+    if do_learn:
         try:
             from core.agent.observer import observe
 
             status = "success" if exit_code == 0 and not timed_out else "failure"
             obs = observe(
-                str(worktree),
+                safe_str(worktree, 300),
                 f"command {status}: {command[:200]}",
                 category="execute",
                 evidence={
                     "exit_code": exit_code,
                     "duration_ms": duration_ms,
-                    **({"context": context} if context else {}),
+                    **({"context": safe_str(context)} if context else {}),
                 },
             )
             learned = obs.learning

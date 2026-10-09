@@ -61,6 +61,6 @@ def test_remember_tool_execute_with_tags():
 
 
 def test_remember_tool_execute_with_agent_id():
-    tool = _make_tool()
+    _make_tool()
     result = _make_tool().execute(content="agent memory", agent_id="agent_42")
     assert result.success is True

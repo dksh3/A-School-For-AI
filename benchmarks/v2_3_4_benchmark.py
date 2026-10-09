@@ -26,21 +26,19 @@ from core.learner.calibration.calibrator import (
     build_calibration_map,
     calibrate,
 )
-from core.learner.calibration.estimator import estimate_confidence_v232
 from core.learner.calibration.metrics import (
     CalibrationCase,
+    abstention_quality,
     brier_score,
+    discrimination_gap,
     expected_calibration_error,
     selective_prediction_accuracy,
     selective_prediction_coverage,
-    abstention_quality,
-    discrimination_gap,
 )
 from core.learner.confidence import ConfidenceConfig
 from core.learner.conflict import ConflictConfig
 from core.learner.learner_v2 import HybridSimilarityLearner
 from core.learner.retrieval_scorer import ScorerConfig
-
 
 # ---------------------------------------------------------------------------
 # Global seed for reproducibility
@@ -1182,7 +1180,7 @@ def build_platt_map(
     if len(raw_confidences) < 20:
         return CalibrationMap(buckets=[], min_samples=20, fallback_mode=True)
 
-    pairs = sorted(zip(raw_confidences, correctness), key=lambda x: x[0])
+    pairs = sorted(zip(raw_confidences, correctness, strict=False), key=lambda x: x[0])
 
     n_bins = 8
     bin_size = max(1, len(pairs) // n_bins)
@@ -1246,7 +1244,8 @@ def compare_calibration_methods(
             "brier": brier_score(val_cases),
             "ece": expected_calibration_error(val_cases, n_bins=5),
             "accuracy": sum(1 for c in val_cases if c.correct) / len(val_cases) if val_cases else 0,
-            "mean_confidence": sum(c.confidence for c in val_cases) / len(val_cases) if val_cases else 0,
+            "mean_confidence": (sum(c.confidence for c in val_cases) / len(val_cases)
+                                if val_cases else 0),
         }
 
     return results
@@ -1265,14 +1264,12 @@ def test_abstention_thresholds(
 
     for threshold in thresholds:
         active = [s for s in samples if s.confidence >= threshold]
-        if active:
-            acc = sum(1 for s in active if s.correct) / len(active)
-        else:
-            acc = 0.0
+        acc = sum(1 for s in active if s.correct) / len(active) if active else 0.0
         cov = len(active) / len(samples) if samples else 0.0
 
         abstained = [s for s in samples if s.confidence < threshold]
-        abstain_wrong = sum(1 for s in abstained if not s.correct) / len(abstained) if abstained else 0.0
+        abstain_wrong = (sum(1 for s in abstained if not s.correct) / len(abstained)
+                         if abstained else 0.0)
 
         results[threshold] = {
             "active_count": len(active),
@@ -1429,9 +1426,10 @@ def test_distribution_shift(
     ]
 
     results = {}
-    for domain_label, queries in [("in_domain", in_domain), ("near_domain", near_domain), ("out_of_domain", out_of_domain)]:
+    for domain_label, queries in [("in_domain", in_domain), ("near_domain", near_domain),
+                                  ("out_of_domain", out_of_domain)]:
         confs = []
-        for query, expected in queries:
+        for query, _expected in queries:
             result = learner.predict(query)
             confs.append(result.confidence)
         results[domain_label] = {
@@ -1513,7 +1511,7 @@ def test_randomization_stability(learner_factory) -> dict:
     results_a = []
     results_b = []
 
-    for run in range(3):
+    for _run in range(3):
         random.seed(42)
         learner = learner_factory()
         for obs in base_training:
@@ -1523,7 +1521,7 @@ def test_randomization_stability(learner_factory) -> dict:
         r = learner.predict(query)
         results_a.append((r.confidence, r.output))
 
-    for run in range(3):
+    for _run in range(3):
         random.seed(42)
         learner = learner_factory()
         for obs in base_training:
@@ -1535,7 +1533,7 @@ def test_randomization_stability(learner_factory) -> dict:
 
     all_match = all(
         abs(a[0] - b[0]) < 1e-10 and a[1] == b[1]
-        for a, b in zip(results_a, results_b)
+        for a, b in zip(results_a, results_b, strict=False)
     )
 
     return {
@@ -1645,7 +1643,7 @@ def print_scale_test(results: dict) -> None:
 def print_stability_test(results: dict) -> None:
     """Print randomization stability test results."""
     print(f"\n  Deterministic: {results['deterministic']}")
-    for i, (a, b) in enumerate(zip(results["run_a"], results["run_b"])):
+    for i, (a, b) in enumerate(zip(results["run_a"], results["run_b"], strict=False)):
         match = "MATCH" if abs(a[0] - b[0]) < 1e-10 and a[1] == b[1] else "DIFF"
         print(f"  Run {i}: A=({a[0]:.4f}, {a[1]}) B=({b[0]:.4f}, {b[1]}) [{match}]")
 
@@ -1700,7 +1698,8 @@ def evaluate_held_out(
     print_sample_table(raw_samples, "HELD-OUT RAW PREDICTIONS")
 
     results = {}
-    for method_name, samples in [("raw", raw_samples), ("isotonic", isotonic_samples), ("platt", platt_samples)]:
+    for method_name, samples in [("raw", raw_samples), ("isotonic", isotonic_samples),
+                                 ("platt", platt_samples)]:
         cases = [
             CalibrationCase(
                 query=s.query, expected=s.expected, predicted=s.predicted,
@@ -1717,7 +1716,8 @@ def evaluate_held_out(
             "abstention_quality": abstention_quality(cases, n_bins=3),
         }
 
-    print(f"\n  {'Method':<12s} {'Brier':>7s} {'ECE':>7s} {'Acc':>6s} {'MConf':>6s} {'DGap':>6s} {'AbstQ':>6s}")
+    print(f"\n  {'Method':<12s} {'Brier':>7s} {'ECE':>7s} {'Acc':>6s} "
+          f"{'MConf':>6s} {'DGap':>6s} {'AbstQ':>6s}")
     print(f"  {'-' * 55}")
     for method, metrics in results.items():
         print(f"  {method:<12s} {metrics['brier']:>7.4f} {metrics['ece']:>7.4f} "
@@ -1771,7 +1771,8 @@ def main():
     held_data: dict[str, list] = {}
 
     for cat_name, test_cases in category_test_data.items():
-        cal, val, held = split_test_data(test_cases, cal_ratio=0.30, val_ratio=0.30, held_ratio=0.40)
+        cal, val, held = split_test_data(test_cases, cal_ratio=0.30,
+                                        val_ratio=0.30, held_ratio=0.40)
         cal_data[cat_name] = cal
         val_data[cat_name] = val
         held_data[cat_name] = held
@@ -1780,7 +1781,8 @@ def main():
     total_cal = sum(len(v) for v in cal_data.values())
     total_val = sum(len(v) for v in val_data.values())
     total_held = sum(len(v) for v in held_data.values())
-    print(f"\n  Split totals: cal={total_cal}, val={total_val}, held={total_held}, sum={total_cal+total_val+total_held}")
+    print(f"\n  Split totals: cal={total_cal}, val={total_val}, held={total_held}, "
+          f"sum={total_cal+total_val+total_held}")
 
     # Verify no overlap
     all_cal = set()
@@ -1832,7 +1834,8 @@ def main():
 
     isotonic_map = build_calibration_map(raw_confs, correctness, n_bins=8, min_samples_per_bin=3)
     platt_map = build_platt_map(raw_confs, correctness)
-    print(f"  Isotonic map: {len(isotonic_map.buckets)} buckets, fallback={isotonic_map.fallback_mode}")
+    print(f"  Isotonic map: {len(isotonic_map.buckets)} buckets, "
+          f"fallback={isotonic_map.fallback_mode}")
     print(f"  Platt map: {len(platt_map.buckets)} buckets, fallback={platt_map.fallback_mode}")
 
     # ---------------------------------------------------------------
@@ -1869,7 +1872,8 @@ def main():
     print("\n  Independence of Evidence Test:")
     independence_results = test_independence_of_evidence(
         _make_learner,
-        [{"input": "sort a list", "output": "sorted(x)"}, {"input": "reverse string", "output": "s[::-1]"}],
+        [{"input": "sort a list", "output": "sorted(x)"},
+         {"input": "reverse string", "output": "s[::-1]"}],
         [("sort a list", "sorted(x)", True), ("reverse string", "s[::-1]", True)],
         [("sort array", "sorted(x)"), ("flip text", "s[::-1]")],
     )
@@ -1952,11 +1956,11 @@ def main():
 
     print(f"\n  Total cases across all splits: {total_cal + total_val + total_held}")
     print(f"  Categories tested: {len(ALL_CATEGORIES)}")
-    print(f"  Calibration methods compared: raw, isotonic, Platt")
-    print(f"  Abstention thresholds tested: 9")
-    print(f"  Special tests: independence, conflict, shift, scale, stability")
+    print("  Calibration methods compared: raw, isotonic, Platt")
+    print("  Abstention thresholds tested: 9")
+    print("  Special tests: independence, conflict, shift, scale, stability")
 
-    print(f"\n  Held-out final metrics (best calibration method):")
+    print("\n  Held-out final metrics (best calibration method):")
     best_method = min(held_final.keys(), key=lambda k: held_final[k]["brier"])
     bm = held_final[best_method]
     print(f"    Method: {best_method}")

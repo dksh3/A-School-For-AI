@@ -1,7 +1,6 @@
 """Tests for orchestrator."""
-import pytest
-from core.routing.v26.tools.base import Tool, ToolResult, ToolRegistry
 from core.routing.v26.orchestrator import Orchestrator
+from core.routing.v26.tools.base import Tool, ToolRegistry, ToolResult
 
 
 class MockTool(Tool):
@@ -22,7 +21,9 @@ class MockTool(Tool):
         return {"type": "object", "properties": {}}
 
     def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(success=self._success, data={"tool": self._name, **kwargs}, errors=[], metadata={})
+        return ToolResult(
+            success=self._success, data={"tool": self._name, **kwargs}, errors=[], metadata={}
+        )
 
 
 class TestOrchestrator:

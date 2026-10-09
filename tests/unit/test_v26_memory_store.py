@@ -246,7 +246,9 @@ class TestSemanticQuery:
         results = store.query(query_text="cat on mat", extractor=extractor, limit=3)
         # Semantic ranking: "cat on mat" should rank higher than "dogs"
         contents = [r.content for r in results]
-        assert contents.index("the cat sat on the mat") < contents.index("dogs are friendly animals")
+        assert (
+            contents.index("the cat sat on the mat") < contents.index("dogs are friendly animals")
+        )
 
     def test_semantic_ranking_with_scope_filter(self) -> None:
         """Scope filtering still works when semantic ranking is active."""

@@ -51,9 +51,17 @@ MIN_RELEVANCE = float(os.environ.get("SCHOOL_SKILLGEN_GITHUB_MIN_RELEVANCE", "0.
 
 
 def classify_file(path: str) -> str:
+    if not isinstance(path, str):
+        try:
+            path = str(path)
+        except Exception:  # noqa: BLE001 — hostile __str__ must not escape
+            return ""
     for pattern, kind in _SKILL_FILE_KINDS:
-        if re.search(pattern, path, re.IGNORECASE):
-            return kind
+        try:
+            if re.search(pattern, path, re.IGNORECASE):
+                return kind
+        except (TypeError, re.error):
+            continue
     return ""
 
 

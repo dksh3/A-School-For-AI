@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
-from core.routing.v26.identity import MemoryScope
+from core.routing.v26.identity import MemoryScope, coerce_text
 from core.routing.v26.memory_manager import MemoryManager
-from core.routing.v26.tools.base import Tool, ToolResult
+from core.routing.v26.tools.base import (
+    Tool,
+    ToolResult,
+    fail_open,
+    safe_memory_dict,
+)
 
 
 class KnowledgeExtractionTool(Tool):
@@ -26,13 +31,18 @@ class KnowledgeExtractionTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "agent_id": {"type": "string", "description": "Agent scope for consolidation.", "default": "default"},
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent scope for consolidation.",
+                    "default": "default",
+                },
             },
             "required": [],
         }
 
+    @fail_open
     def execute(self, **kwargs) -> ToolResult:
-        agent_id: str = kwargs.get("agent_id", "default")
+        agent_id = coerce_text(kwargs.get("agent_id", "default"), "default") or "default"
 
         from core.routing.v26.identity import AgentIdentity
         agent = AgentIdentity.create(agent_id=agent_id)
@@ -46,8 +56,11 @@ class KnowledgeExtractionTool(Tool):
                 "promoted_count": result.promoted_count,
                 "retained_count": result.retained_count,
                 "discarded_count": result.discarded_count,
-                "promoted": [e.to_dict() for e in result.promoted],
-                "provenance": {k: list(v) for k, v in result.provenance.items()},
+                "promoted": [safe_memory_dict(e) for e in result.promoted],
+                "provenance": {
+                    coerce_text(k): [coerce_text(i) for i in v]
+                    for k, v in result.provenance.items()
+                },
             },
             errors=[],
             metadata={"tool": self.name},

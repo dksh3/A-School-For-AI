@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.agent.observer import safe_str
+
 DEPTHS: tuple[str, ...] = ("quick", "standard", "deep")
 FORMATS: tuple[str, ...] = ("summary", "detailed", "raw")
 PASS_COUNT = {"quick": 1, "standard": 2, "deep": 3}
@@ -87,7 +89,7 @@ def _load_observations(worktree: Path | str) -> list[dict[str, Any]]:
     """Read the observation log for a worktree (empty when absent)."""
     from core.agent.observer import _observe_path, _read_lines
 
-    return _read_lines(_observe_path(str(worktree)))
+    return _read_lines(_observe_path(safe_str(worktree, 300)))
 
 
 def _cross_terms(
@@ -267,8 +269,8 @@ def research(
         return ResearchResult(
             ok=True,
             query=query if isinstance(query, str) else "",
-            depth=depth,
-            fmt=fmt,
+            depth=depth if isinstance(depth, str) and depth in DEPTHS else "standard",
+            fmt=fmt if isinstance(fmt, str) and fmt in FORMATS else "summary",
             learnings="research disabled",
             findings=[],
             source="disabled",
@@ -278,27 +280,37 @@ def research(
     if not isinstance(query, str) or not query.strip():
         return ResearchResult(ok=False, query="", error="empty query")
 
-    eff_depth = depth if depth in DEPTHS else "standard"
-    eff_fmt = fmt if fmt in FORMATS else "summary"
+    depth_s = depth if isinstance(depth, str) else safe_str(depth, 60)
+    fmt_s = fmt if isinstance(fmt, str) else safe_str(fmt, 60)
+    eff_depth = depth_s if depth_s in DEPTHS else "standard"
+    eff_fmt = fmt_s if fmt_s in FORMATS else "summary"
     notes: list[str] = []
-    if eff_depth != depth:
-        notes.append(f"unknown depth {depth!r} fell back to 'standard'")
-    if eff_fmt != fmt:
-        notes.append(f"unknown fmt {fmt!r} fell back to 'summary'")
+    if eff_depth != depth_s:
+        notes.append(f"unknown depth {depth_s!r} fell back to 'standard'")
+    if eff_fmt != fmt_s:
+        notes.append(f"unknown fmt {fmt_s!r} fell back to 'summary'")
+    try:
+        use_cite = bool(cite)
+    except Exception:
+        use_cite = True
 
     try:
         findings = _search_passes(query, _load_observations(worktree), eff_depth)
         if len(findings) < 2:
             findings.extend(_synthesize(query, 2 - len(findings)))
         findings = findings[:MAX_FINDINGS]
-        citations = _build_citations(query, findings) if cite else []
+        citations = _build_citations(query, findings) if use_cite else []
         source = _provenance(findings)
         learnings = _format_learnings(
             query, eff_depth, eff_fmt, findings, citations, source, notes
         )
-    except (OSError, ValueError) as exc:
+    except Exception as exc:
         return ResearchResult(
-            ok=False, query=query, depth=eff_depth, fmt=eff_fmt, error=str(exc)
+            ok=False,
+            query=query,
+            depth=eff_depth,
+            fmt=eff_fmt,
+            error=safe_str(exc, 300) or type(exc).__name__,
         )
 
     try:

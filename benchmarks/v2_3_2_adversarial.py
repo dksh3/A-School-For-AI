@@ -10,7 +10,6 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from core.learner.base import LearningInput
-from core.learner.calibration.metrics import CalibrationCase, compute_full_report
 from core.learner.calibration.estimator import estimate_confidence_v232
 from core.learner.confidence import ConfidenceConfig
 from core.learner.conflict import ConflictConfig
@@ -86,7 +85,8 @@ def test_majority_trap():
         confidence_config=ConfidenceConfig(),
     )
     for _ in range(4):
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "bubble_sort(x)"}))
+        learner.learn(LearningInput(
+            observation={"input": "sort a list", "output": "bubble_sort(x)"}))
     learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
 
     v232, r = _get_v232_confidence(learner, "sort a list")
@@ -110,7 +110,7 @@ def test_evidence_count_trap():
         learner.feedback("sort a list", "sorted(x)", correct=True)
 
     v232, r = _get_v232_confidence(learner, "sort a list")
-    print(f"  Strong memory with 20 correct uses")
+    print("  Strong memory with 20 correct uses")
     print(f"  Confidence: {v232.confidence:.4f} (should be HIGH)")
     return v232.confidence
 
@@ -130,7 +130,7 @@ def test_feedback_poisoning():
         learner.feedback("sort a list", "sorted(x)", correct=False)
 
     v232, r = _get_v232_confidence(learner, "sort a list")
-    print(f"  5 correct, 10 incorrect feedback")
+    print("  5 correct, 10 incorrect feedback")
     print(f"  Confidence: {v232.confidence:.4f} (should be LOW after poisoning)")
     return v232.confidence
 
@@ -148,7 +148,7 @@ def test_novelty_trap():
     learner.learn(LearningInput(observation={"input": "find maximum", "output": "max(x)"}))
 
     v232, r = _get_v232_confidence(learner, "sort of interesting")
-    print(f"  Query: 'sort of interesting' (lexically similar to 'sort a list')")
+    print("  Query: 'sort of interesting' (lexically similar to 'sort a list')")
     print(f"  Confidence: {v232.confidence:.4f} (should be LOW for unrelated)")
     return v232.confidence
 
@@ -169,7 +169,7 @@ def test_conflict_trap():
         learner.feedback("sort a list", "list.sort()", correct=True)
 
     v232, r = _get_v232_confidence(learner, "sort a list")
-    print(f"  Two credible answers: 'sorted(x)' vs 'list.sort()'")
+    print("  Two credible answers: 'sorted(x)' vs 'list.sort()'")
     print(f"  Confidence: {v232.confidence:.4f} (should be LOW due to conflict)")
     return v232.confidence
 
@@ -188,7 +188,7 @@ def test_calibration_manipulation():
         learner.feedback("sort a list", "sorted(x)", correct=True)
 
     v232, r = _get_v232_confidence(learner, "sort a list")
-    print(f"  10 identical memories, 5 correct feedbacks")
+    print("  10 identical memories, 5 correct feedbacks")
     print(f"  Confidence: {v232.confidence:.4f}")
     return v232.confidence
 
@@ -207,7 +207,7 @@ def main():
     results["calibration_manipulation"] = ("high", test_calibration_manipulation())
 
     print(f"\n{'='*60}")
-    print(f"  ADVERSARIAL RESULTS SUMMARY")
+    print("  ADVERSARIAL RESULTS SUMMARY")
     print(f"{'='*60}")
     for name, (expect, conf) in results.items():
         if expect == "low":

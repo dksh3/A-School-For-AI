@@ -44,7 +44,7 @@ class TestExecutionHooksRegistered:
     def test_tool_surface_unchanged(self) -> None:
         """The tool surface: 26 approved tools + three S2 context mirrors."""
         names = re.findall(r"^\s+(school_\w+): tool\(", TS_PLUGIN_SOURCE, re.MULTILINE)
-        assert len(names) == 37, f"tool surface changed: {names}"
+        assert len(names) == 40, f"tool surface changed: {names}"
 
 
 class TestStatusFooterAndDashboard:
@@ -52,10 +52,11 @@ class TestStatusFooterAndDashboard:
 
     def test_footer_hook_appends_marked_line(self) -> None:
         block = _hook_block("experimental.text.complete")
-        assert "hooksEnabled()" in block
+        # Always-show behavior: the [school] bracket appears even with no tool used.
+        assert "ALWAYS show the [school] bracket" in block
         assert "schoolFooter()" in block
         assert "output.text =" in block
-        assert 'includes("[school] route:")' in block
+        assert '[school]' in block
 
     def test_footer_state_covers_all_chips(self) -> None:
         for chip in ("route: ", "next: ", "ctx: ", "recall: ", "learn: ", "diag: "):

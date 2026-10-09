@@ -6,8 +6,6 @@ import tempfile
 import time
 from pathlib import Path
 
-import pytest
-
 from core.learner.hybrid_memory import HybridMemory
 from core.learner.knowledge_ops import (
     RedundancyType,
@@ -25,8 +23,7 @@ from core.learner.lifecycle import (
     compute_health_score,
     compute_reinforcement,
 )
-from core.learner.lifecycle_manager import LifecycleManager, MemoryLifecycleState
-
+from core.learner.lifecycle_manager import LifecycleManager
 
 # ---------------------------------------------------------------------------
 # Lifecycle states
@@ -174,8 +171,8 @@ class TestReinforcement:
 
 class TestSupersession:
     def _make_example(self, output: str, success: int, failure: int, weight: float = 1.0):
-        from core.learner.hybrid_memory import HybridExample
         from core.learner.feature_extractor import FeatureVector
+        from core.learner.hybrid_memory import HybridExample
 
         return HybridExample(
             id=1,
@@ -221,8 +218,8 @@ class TestSupersession:
 
 class TestMerging:
     def _make_example(self, input_text: str, output: str, success: int = 5, failure: int = 0):
-        from core.learner.hybrid_memory import HybridExample
         from core.learner.feature_extractor import FeatureVector
+        from core.learner.hybrid_memory import HybridExample
 
         return HybridExample(
             id=1,
@@ -257,8 +254,8 @@ class TestMerging:
 
 class TestRedundancy:
     def _make_example(self, input_text: str, output: str, success: int = 5, failure: int = 0):
-        from core.learner.hybrid_memory import HybridExample
         from core.learner.feature_extractor import FeatureVector
+        from core.learner.hybrid_memory import HybridExample
 
         return HybridExample(
             id=1,
@@ -284,7 +281,10 @@ class TestRedundancy:
         config = LifecycleConfig()
         result = analyze_redundancy(a, b, config)
         # Same output = either NORMALIZED_DUPLICATE or SEMANTIC_DUPLICATE
-        assert result.type in (RedundancyType.NORMALIZED_DUPLICATE, RedundancyType.SEMANTIC_DUPLICATE)
+        assert result.type in (
+            RedundancyType.NORMALIZED_DUPLICATE,
+            RedundancyType.SEMANTIC_DUPLICATE,
+        )
         assert result.should_consolidate
 
     def test_different_output(self):
@@ -292,7 +292,10 @@ class TestRedundancy:
         b = self._make_example("sort a list", "list.sort()")
         config = LifecycleConfig()
         result = analyze_redundancy(a, b, config)
-        assert result.type in (RedundancyType.RELATED_BUT_INDEPENDENT, RedundancyType.GENUINELY_DISTINCT)
+        assert result.type in (
+            RedundancyType.RELATED_BUT_INDEPENDENT,
+            RedundancyType.GENUINELY_DISTINCT,
+        )
 
     def test_preserves_evidence(self):
         a = self._make_example("sort a list", "sorted(x)", success=10)
@@ -309,8 +312,8 @@ class TestRedundancy:
 
 class TestArchiving:
     def _make_example(self, success: int = 5, failure: int = 0):
-        from core.learner.hybrid_memory import HybridExample
         from core.learner.feature_extractor import FeatureVector
+        from core.learner.hybrid_memory import HybridExample
 
         return HybridExample(
             id=1,
@@ -337,7 +340,7 @@ class TestArchiving:
 
     def test_archive_creates_event(self):
         example = self._make_example(0, 5)
-        config = LifecycleConfig()
+        LifecycleConfig()
         state, event = archive_memory(example, "Low health", MemoryState.ACTIVE)
         assert state == MemoryState.ARCHIVED
         assert event.previous_state == "active"
@@ -351,8 +354,8 @@ class TestArchiving:
 
 class TestLifecycleManager:
     def _make_example(self, id: int = 1, output: str = "test", success: int = 5, failure: int = 0):
-        from core.learner.hybrid_memory import HybridExample
         from core.learner.feature_extractor import FeatureVector
+        from core.learner.hybrid_memory import HybridExample
 
         return HybridExample(
             id=id,
@@ -421,7 +424,6 @@ class TestLifecycleManager:
         manager = LifecycleManager()
         memory = HybridMemory()
         from core.learner.feature_extractor import FeatureVector
-        from core.learner.base import LearningInput
 
         # Add some examples
         for i in range(5):

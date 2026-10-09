@@ -8,7 +8,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.agent.observer import safe_str
+
 GOAL_FILE = "goals.json"
+ACTIONS = frozenset({"set", "status", "complete", "block", "pause", "resume", "clear", "history"})
 
 
 @dataclass
@@ -31,8 +34,8 @@ def _goal_path(worktree: str) -> Path:
 def _load(worktree: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(_goal_path(worktree).read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError, TypeError):
+        return [g for g in data if isinstance(g, dict)] if isinstance(data, list) else []
+    except Exception:
         return []
 
 
@@ -44,23 +47,23 @@ def _save(worktree: str, goals: list[dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 
-def goal(
+def _as_int(value: Any, default: int = 0) -> int:
+    """Coerce any value to int; never raises."""
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _apply(
     worktree: str,
     action: str,
-    goal_id: str = "",
-    objective: str = "",
-    success_criteria: str = "",
-    max_turns: int = 0,
-    constraints: str = "",
+    goal_id: str,
+    objective: str,
+    success_criteria: str,
+    max_turns: int,
+    constraints: str,
 ) -> GoalResult:
-    """Manage learning goals: set / status / complete / block / pause / resume / clear / history."""
-    if os.environ.get("SCHOOL_GOAL", "") == "0":
-        return GoalResult(ok=True, action=action)
-
-    valid = {"set", "status", "complete", "block", "pause", "resume", "clear", "history"}
-    if action not in valid:
-        return GoalResult(ok=False, action=action, error=f"unknown action: {action}")
-
     goals = _load(worktree)
 
     if action == "set":
@@ -90,7 +93,7 @@ def goal(
         return GoalResult(ok=True, action=action)
 
     for g in goals:
-        if g.get("id") == goal_id:
+        if safe_str(g.get("id", "")) == goal_id:
             if action == "complete":
                 g["state"] = "complete"
             elif action == "block":
@@ -105,11 +108,48 @@ def goal(
                 ok=True,
                 action=action,
                 goal_id=goal_id,
-                state=g["state"],
-                objective=g.get("objective", ""),
+                state=safe_str(g.get("state", "")),
+                objective=safe_str(g.get("objective", "")),
             )
 
     return GoalResult(ok=False, action=action, goal_id=goal_id, error="goal not found")
+
+
+def goal(
+    worktree: str,
+    action: str,
+    goal_id: str = "",
+    objective: str = "",
+    success_criteria: str = "",
+    max_turns: int = 0,
+    constraints: str = "",
+) -> GoalResult:
+    """Manage learning goals: set / status / complete / block / pause / resume / clear / history."""
+    action_s = safe_str(action)
+    goal_id_s = safe_str(goal_id)
+    if os.environ.get("SCHOOL_GOAL", "") == "0":
+        return GoalResult(ok=True, action=action_s)
+
+    if action_s not in ACTIONS:
+        return GoalResult(ok=False, action=action_s, error=f"unknown action: {action_s}")
+
+    try:
+        return _apply(
+            worktree,
+            action_s,
+            goal_id_s,
+            safe_str(objective),
+            safe_str(success_criteria),
+            _as_int(max_turns),
+            safe_str(constraints),
+        )
+    except Exception as exc:
+        return GoalResult(
+            ok=False,
+            action=action_s,
+            goal_id=goal_id_s,
+            error=safe_str(exc, 300) or type(exc).__name__,
+        )
 
 
 __all__ = ["GoalResult", "goal"]

@@ -157,7 +157,9 @@ class TestAdversarialConflictDetection:
             ),
         )
         # Different tasks with different correct answers
-        learner.learn(LearningInput(observation={"input": "open a file handle", "output": "open()"}))
+        learner.learn(
+            LearningInput(observation={"input": "open a file handle", "output": "open()"})
+        )
         learner.learn(LearningInput(observation={"input": "create a list", "output": "list()"}))
 
         result = learner.predict("open a file")

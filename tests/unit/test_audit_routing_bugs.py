@@ -9,20 +9,18 @@ from __future__ import annotations
 import tempfile
 import time
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from core.routing.cache import RoutingCache, compute_cache_key
+from core.routing.cache import RoutingCache
 from core.routing.context import ContextState
 from core.routing.decision import RoutingDecision, create_discard_decision
 from core.routing.destinations import DISCARD, Destination, DestinationType
-from core.routing.efficiency import EfficiencyConfig, EfficiencyController
+from core.routing.efficiency import EfficiencyController
 from core.routing.information import (
     InformationPacket,
     InformationType,
     SensitivityLevel,
-    SourceType,
 )
 from core.routing.integration import SchoolIntegrationBridge, make_noop_handler
 from core.routing.pipeline import RoutingPipeline
@@ -30,7 +28,6 @@ from core.routing.priority import Priority, PriorityConfig
 from core.routing.provenance import ProvenanceTracker, RoutingProvenance
 from core.routing.router import UniversalRouter
 from core.routing.security import SecurityPolicy, enforce_policy
-from core.routing.telemetry import TelemetryEvent, TelemetryRecord
 
 
 def _make_packet(
@@ -283,7 +280,10 @@ class TestBugExceptionSwallowing:
 
         bridge.register_handler(DestinationType.LEARNING, failing_handler)
         pkt = _make_packet(content="test")
-        dec = RoutingDecision(packet_id="p1", destinations=(Destination(destination_type=DestinationType.LEARNING),))
+        dec = RoutingDecision(
+            packet_id="p1",
+            destinations=(Destination(destination_type=DestinationType.LEARNING),),
+        )
 
         result = bridge.dispatch(pkt, dec)
         assert result is False
@@ -302,7 +302,10 @@ class TestBugNoOpDispatchCounted:
     def test_no_handler_not_counted(self) -> None:
         bridge = SchoolIntegrationBridge()
         pkt = _make_packet(content="test")
-        dec = RoutingDecision(packet_id="p1", destinations=(Destination(destination_type=DestinationType.LEARNING),))
+        dec = RoutingDecision(
+            packet_id="p1",
+            destinations=(Destination(destination_type=DestinationType.LEARNING),),
+        )
 
         bridge.dispatch(pkt, dec)
         stats = bridge.get_stats()
@@ -315,7 +318,10 @@ class TestBugNoOpDispatchCounted:
         bridge = SchoolIntegrationBridge()
         bridge.register_handler(DestinationType.LEARNING, make_noop_handler())
         pkt = _make_packet(content="test")
-        dec = RoutingDecision(packet_id="p1", destinations=(Destination(destination_type=DestinationType.LEARNING),))
+        dec = RoutingDecision(
+            packet_id="p1",
+            destinations=(Destination(destination_type=DestinationType.LEARNING),),
+        )
 
         bridge.dispatch(pkt, dec)
         stats = bridge.get_stats()
@@ -365,7 +371,7 @@ class TestBugDiscardDestinationInconsistency:
         dest = dec.destinations[0]
         # The destination should have a name
         assert dest.name != "", (
-            f"Discard destination should have a name, got empty string"
+            "Discard destination should have a name, got empty string"
         )
 
     def test_discard_matches_module_constant(self) -> None:

@@ -106,18 +106,16 @@ class MemoryStore:
             if scope is not None:
                 if entry.scope.agent.agent_id != scope.agent.agent_id:
                     continue
-                if scope.project and scope.project.project_id:
-                    if (
-                        entry.scope.project is None
-                        or entry.scope.project.project_id != scope.project.project_id
-                    ):
-                        continue
-                if scope.session and scope.session.session_id:
-                    if (
-                        entry.scope.session is None
-                        or entry.scope.session.session_id != scope.session.session_id
-                    ):
-                        continue
+                if scope.project and scope.project.project_id and (
+                    entry.scope.project is None
+                    or entry.scope.project.project_id != scope.project.project_id
+                ):
+                    continue
+                if scope.session and scope.session.session_id and (
+                    entry.scope.session is None
+                    or entry.scope.session.session_id != scope.session.session_id
+                ):
+                    continue
 
             # Kind filter
             if kind is not None and entry.kind != kind:
@@ -167,12 +165,11 @@ class MemoryStore:
             if scope is not None:
                 if entry.scope.agent.agent_id != scope.agent.agent_id:
                     continue
-                if scope.project and scope.project.project_id:
-                    if (
-                        entry.scope.project is None
-                        or entry.scope.project.project_id != scope.project.project_id
-                    ):
-                        continue
+                if scope.project and scope.project.project_id and (
+                    entry.scope.project is None
+                    or entry.scope.project.project_id != scope.project.project_id
+                ):
+                    continue
             if kind is not None and entry.kind != kind:
                 continue
             count += 1
@@ -194,18 +191,16 @@ class MemoryStore:
         for mid, entry in self._entries.items():
             if entry.scope.agent.agent_id != scope.agent.agent_id:
                 continue
-            if scope.project and scope.project.project_id:
-                if (
-                    entry.scope.project is None
-                    or entry.scope.project.project_id != scope.project.project_id
-                ):
-                    continue
-            if scope.session and scope.session.session_id:
-                if (
-                    entry.scope.session is None
-                    or entry.scope.session.session_id != scope.session.session_id
-                ):
-                    continue
+            if scope.project and scope.project.project_id and (
+                entry.scope.project is None
+                or entry.scope.project.project_id != scope.project.project_id
+            ):
+                continue
+            if scope.session and scope.session.session_id and (
+                entry.scope.session is None
+                or entry.scope.session.session_id != scope.session.session_id
+            ):
+                continue
             to_remove.append(mid)
 
         for mid in to_remove:

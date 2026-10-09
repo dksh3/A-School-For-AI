@@ -1,7 +1,8 @@
 """Codex harness adapter stub."""
 
-from adapters.base import HarnessAdapter, AdapterConfig, AdapterCapability, AdapterResponse
 from typing import Any
+
+from adapters.base import AdapterCapability, AdapterConfig, AdapterResponse, HarnessAdapter
 
 
 class CodexAdapter(HarnessAdapter):
@@ -25,7 +26,9 @@ class CodexAdapter(HarnessAdapter):
         """Apply configuration to the adapter."""
         raise NotImplementedError
 
-    async def send_prompt(self, prompt: str, context: dict[str, Any] | None = None) -> AdapterResponse:
+    async def send_prompt(
+        self, prompt: str, context: dict[str, Any] | None = None
+    ) -> AdapterResponse:
         """Send a prompt to Codex and return the response."""
         raise NotImplementedError
 

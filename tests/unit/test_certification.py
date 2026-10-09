@@ -6,8 +6,6 @@ Each test class corresponds to a certification category.
 
 from __future__ import annotations
 
-import json
-import math
 import random
 import tempfile
 import time
@@ -16,17 +14,12 @@ from pathlib import Path
 
 import pytest
 
-from core.learner.confidence import estimate_confidence, ConfidenceConfig
+from core.learner.confidence import ConfidenceConfig, estimate_confidence
 from core.learner.hybrid_memory import HybridExample, HybridMemory
 from core.learner.knowledge_ops import (
-    MergeCandidate,
-    RedundancyResult,
     RedundancyType,
-    SupersessionResult,
-    TokenInvertedIndex,
     analyze_redundancy,
     analyze_supersession,
-    archive_memory,
     compute_semantic_similarity,
     find_merge_candidates,
     is_eligible_for_archive,
@@ -34,7 +27,6 @@ from core.learner.knowledge_ops import (
 from core.learner.lifecycle import (
     HealthSignals,
     LifecycleConfig,
-    LifecycleEvent,
     MemoryState,
     compute_decay,
     compute_health_score,
@@ -44,11 +36,8 @@ from core.learner.lifecycle_manager import (
     EventTriggerConfig,
     LifecycleManager,
     MaintenanceEvent,
-    MaintenanceRecord,
     MemoryLifecycleState,
-    PERSISTENCE_VERSION,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -83,8 +72,14 @@ def _mem(
 
 def _pool(n: int, seed: int = 42) -> list[HybridExample]:
     rng = random.Random(seed)
-    topics = ["python", "javascript", "rust", "go", "java", "database", "api", "testing", "deploy", "security"]
-    actions = ["implement", "fix", "optimize", "refactor", "test", "deploy", "configure", "debug", "review", "doc"]
+    topics = [
+        "python", "javascript", "rust", "go", "java",
+        "database", "api", "testing", "deploy", "security",
+    ]
+    actions = [
+        "implement", "fix", "optimize", "refactor", "test",
+        "deploy", "configure", "debug", "review", "doc",
+    ]
     return [
         _mem(i, f"{rng.choice(actions)} {rng.choice(topics)} feature {i}",
              f"Solution for topic {i % 10}: approach {i % 10}",
@@ -205,7 +200,7 @@ class TestLifecycleSafety:
 
     def test_archive_not_delete(self) -> None:
         manager = LifecycleManager()
-        example = _mem(0, "test", "output", succ=0, fail=10)
+        _mem(0, "test", "output", succ=0, fail=10)
         state = manager.get_state(0)
         state.state = MemoryState.ARCHIVED
         assert state.state == MemoryState.ARCHIVED
@@ -257,8 +252,12 @@ class TestSemanticMergeCertification:
             _mem(2, "python list sorting", "use sorted() or list.sort()", succ=8, fail=0),
             _mem(3, "sorting a python list", "use sorted() or list.sort()", succ=6, fail=1),
             # Paraphrases
-            _mem(4, "what is a closure in python", "A closure is a function that captures variables from its enclosing scope", succ=7, fail=0),
-            _mem(5, "explain python closures", "A closure captures variables from the enclosing function's scope", succ=4, fail=0),
+            _mem(4, "what is a closure in python",
+                 "A closure is a function that captures variables from its enclosing scope",
+                 succ=7, fail=0),
+            _mem(5, "explain python closures",
+                 "A closure captures variables from the enclosing function's scope",
+                 succ=4, fail=0),
             # Near duplicates
             _mem(6, "how to read a file in python", "use open() and read()", succ=9, fail=0),
             _mem(7, "reading files in python", "use open() and .read() method", succ=3, fail=2),
@@ -267,13 +266,17 @@ class TestSemanticMergeCertification:
             _mem(9, "how to read a JSON file", "use json.load()", succ=6, fail=0),
             # Contradictory knowledge
             _mem(10, "is python slow", "yes, python is slow compared to C", succ=3, fail=2),
-            _mem(11, "is python slow", "no, python is fast enough for most use cases", succ=4, fail=1),
+            _mem(11, "is python slow",
+                 "no, python is fast enough for most use cases", succ=4, fail=1),
             # Context-dependent alternatives
-            _mem(12, "best way to handle errors in python", "use try/except blocks", succ=8, fail=0),
-            _mem(13, "best way to handle errors in python", "use contextlib.suppress for ignoring errors", succ=3, fail=1),
+            _mem(12, "best way to handle errors in python",
+                 "use try/except blocks", succ=8, fail=0),
+            _mem(13, "best way to handle errors in python",
+                 "use contextlib.suppress for ignoring errors", succ=3, fail=1),
             # Same input different valid outputs
             _mem(14, "how to install packages", "use pip install", succ=10, fail=0),
-            _mem(15, "how to install packages", "use conda install for data science", succ=5, fail=0),
+            _mem(15, "how to install packages",
+                 "use conda install for data science", succ=5, fail=0),
             # Unrelated knowledge
             _mem(16, "what is TCP", "Transmission Control Protocol", succ=7, fail=0),
             _mem(17, "what is DNS", "Domain Name System", succ=6, fail=0),
@@ -281,7 +284,9 @@ class TestSemanticMergeCertification:
             _mem(18, "hi", "hello", succ=2, fail=0),
             _mem(19, "bye", "goodbye", succ=2, fail=0),
             # Long inputs
-            _mem(20, "how do I implement a binary search tree in python with insertion deletion and search operations", "use a Node class with left/right children", succ=5, fail=0),
+            _mem(20, "how do I implement a binary search tree in python with insertion"
+                 " deletion and search operations",
+                 "use a Node class with left/right children", succ=5, fail=0),
             _mem(21, "implement BST python", "use Node class with left/right", succ=3, fail=1),
             # Noisy inputs
             _mem(22, "!!!how??? to,,,sort---a   list", "use sorted()", succ=4, fail=0),
@@ -322,7 +327,6 @@ class TestSemanticMergeCertification:
         # (0,1) exact duplicates should merge
         # (2,3) normalized duplicates should merge
         # (6,7) near duplicates should merge
-        expected_true = {(0, 1), (2, 3), (6, 7)}
         candidate_ids = {(c.id_a, c.id_b) for c in candidates}
 
         # At minimum, exact duplicates must be found
@@ -349,7 +353,9 @@ class TestSemanticMergeCertification:
             precision = true_positives / (true_positives + false_positives)
             assert precision >= 0.5, f"Precision too low: {precision}"
 
-    def test_semantic_similarity_does_not_force_merge(self, held_out_dataset: list[HybridExample]) -> None:
+    def test_semantic_similarity_does_not_force_merge(
+        self, held_out_dataset: list[HybridExample]
+    ) -> None:
         """Semantic similarity alone should not determine mergeability."""
         config = LifecycleConfig(
             merge_similarity=0.3,  # Low output threshold
@@ -377,12 +383,16 @@ class TestCandidateGenerationCertification:
         """Indexed must find same candidates as brute-force."""
         for seed in [42, 123, 456, 789, 101]:
             memories = _pool(200, seed=seed)
-            config = LifecycleConfig(merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1)
+            config = LifecycleConfig(
+                merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1
+            )
             brute = find_merge_candidates(memories, config, use_index=False)
             indexed = find_merge_candidates(memories, config, use_index=True)
             brute_ids = {(c.id_a, c.id_b) for c in brute}
             indexed_ids = {(c.id_a, c.id_b) for c in indexed}
-            assert brute_ids == indexed_ids, f"Seed {seed}: {len(brute_ids)} brute vs {len(indexed_ids)} indexed"
+            assert brute_ids == indexed_ids, (
+                f"Seed {seed}: {len(brute_ids)} brute vs {len(indexed_ids)} indexed"
+            )
 
     def test_candidate_recall_exact_duplicates(self) -> None:
         """Must find all exact duplicate pairs."""
@@ -392,7 +402,9 @@ class TestCandidateGenerationCertification:
             _mem(2, "rust sort", "use .sort()", succ=4),
             _mem(3, "rust sort", "use .sort()", succ=2),
         ]
-        config = LifecycleConfig(merge_similarity=0.8, merge_input_similarity=0.6, merge_min_evidence=2)
+        config = LifecycleConfig(
+            merge_similarity=0.8, merge_input_similarity=0.6, merge_min_evidence=2
+        )
         candidates = find_merge_candidates(memories, config, use_index=True)
         candidate_ids = {(c.id_a, c.id_b) for c in candidates}
         assert (0, 1) in candidate_ids
@@ -400,25 +412,31 @@ class TestCandidateGenerationCertification:
 
     def test_scalability_100(self) -> None:
         memories = _pool(100, seed=42)
-        config = LifecycleConfig(merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1)
+        config = LifecycleConfig(
+            merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1
+        )
         start = time.time()
-        candidates = find_merge_candidates(memories, config, use_index=True)
+        find_merge_candidates(memories, config, use_index=True)
         elapsed = (time.time() - start) * 1000
         assert elapsed < 500, f"100 memories took {elapsed:.1f}ms"
 
     def test_scalability_1000(self) -> None:
         memories = _pool(1000, seed=42)
-        config = LifecycleConfig(merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1)
+        config = LifecycleConfig(
+            merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1
+        )
         start = time.time()
-        candidates = find_merge_candidates(memories, config, use_index=True)
+        find_merge_candidates(memories, config, use_index=True)
         elapsed = (time.time() - start) * 1000
         assert elapsed < 5000, f"1000 memories took {elapsed:.1f}ms"
 
     def test_scalability_5000(self) -> None:
         memories = _pool(5000, seed=42)
-        config = LifecycleConfig(merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1)
+        config = LifecycleConfig(
+            merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1
+        )
         start = time.time()
-        candidates = find_merge_candidates(memories, config, use_index=True)
+        find_merge_candidates(memories, config, use_index=True)
         elapsed = (time.time() - start) * 1000
         assert elapsed < 30000, f"5000 memories took {elapsed:.1f}ms"
 
@@ -630,7 +648,9 @@ class TestLongRunStability:
                 health_history.append(avg_health)
 
         # Health should not collapse or inflate
-        assert all(0.0 <= h <= 1.0 for h in health_history), f"Health out of bounds: {health_history}"
+        assert all(0.0 <= h <= 1.0 for h in health_history), (
+            f"Health out of bounds: {health_history}"
+        )
         # Health should not monotonically decrease to zero
         assert health_history[-1] > 0.0, "Health collapsed to zero"
 
@@ -658,7 +678,7 @@ class TestReinforcementAttack:
     """Verify repeated identical feedback cannot manipulate lifecycle."""
 
     def test_repeated_success_bounded(self) -> None:
-        manager = LifecycleManager()
+        LifecycleManager()
         config = LifecycleConfig()
         conf = 0.5
         for i in range(1000):
@@ -677,7 +697,7 @@ class TestReinforcementAttack:
         assert c3 <= 1.0
         # The increment from 1->10 should be larger than 10->100
         # because of log diminishing returns
-        d1 = c1 - 0.5
+        c1 - 0.5
         d2_10 = c2 - c1
         d10_100 = c3 - c2
         # With log scaling, each 10x adds less
@@ -688,15 +708,15 @@ class TestReinforcementAttack:
         """One memory with 100 uses vs 10 memories each used once."""
         config = LifecycleConfig()
         # Single memory, 100 successes
-        single = compute_reinforcement(0.5, 100, 1, config)
+        compute_reinforcement(0.5, 100, 1, config)
         # 10 independent memories, 10 successes each
         independent = compute_reinforcement(0.5, 10, 10, config)
         # Independent evidence should be competitive
         assert independent > 0.5, "Independent evidence not impactful"
 
     def test_repeated_failure_bounded(self) -> None:
-        manager = LifecycleManager()
-        example = _mem(0, "test", "output", succ=0, fail=0)
+        LifecycleManager()
+        _mem(0, "test", "output", succ=0, fail=0)
         for _ in range(1000):
             signals = HealthSignals(
                 success_rate=0.0,
@@ -781,9 +801,11 @@ class TestSupersessionCertification:
         test_cases = [
             # (old, new, expected_should_supersede)
             (_mem(0, "q", "a", succ=10), _mem(1, "q", "b", succ=1), False),  # old strong
-            (_mem(2, "q", "a", succ=1, fail=5), _mem(3, "q", "b", succ=20, fail=0), True),  # new much stronger
+            (_mem(2, "q", "a", succ=1, fail=5), _mem(3, "q", "b", succ=20, fail=0),
+             True),  # new much stronger
             (_mem(4, "q", "a", succ=5), _mem(5, "q", "b", succ=5), False),   # equal
-            (_mem(6, "q", "a", succ=0, fail=5), _mem(7, "q", "b", succ=0, fail=5), False),  # both weak
+            (_mem(6, "q", "a", succ=0, fail=5), _mem(7, "q", "b", succ=0, fail=5),
+             False),  # both weak
             (_mem(8, "q", "a", succ=10), _mem(9, "q", "a", succ=10), False),  # same output
         ]
         for old, new, expected in test_cases:
@@ -804,7 +826,7 @@ class TestArchivalCertification:
 
     def test_archive_preserves_provenance(self) -> None:
         manager = LifecycleManager()
-        example = _mem(0, "test", "output")
+        _mem(0, "test", "output")
         state = manager.get_state(0)
         state.state = MemoryState.ACTIVE
         state.state = MemoryState.ARCHIVED
@@ -863,7 +885,7 @@ class TestProvenanceCertification:
         state.state = MemoryState.ACTIVE
         state.state = MemoryState.ARCHIVED
 
-        events = manager.get_events()
+        manager.get_events()
         # Events are recorded when using archive/restore methods
         # Direct state assignment doesn't create events in this test
 
@@ -1006,7 +1028,9 @@ class TestMultiSeedEvaluation:
         """Verify merge candidates are consistent across seeds."""
         for seed in [42, 123, 456, 789, 101]:
             memories = _pool(100, seed=seed)
-            config = LifecycleConfig(merge_similarity=0.8, merge_input_similarity=0.6, merge_min_evidence=2)
+            config = LifecycleConfig(
+                merge_similarity=0.8, merge_input_similarity=0.6, merge_min_evidence=2
+            )
             candidates = find_merge_candidates(memories, config, use_index=True)
             # Should find some candidates for each seed
             assert len(candidates) >= 0, f"Seed {seed}: negative candidates"
@@ -1064,7 +1088,9 @@ class TestAdversarialRobustness:
 
     def test_duplicate_flood(self) -> None:
         memories = [_mem(i, "same input", "same output", succ=10) for i in range(100)]
-        config = LifecycleConfig(merge_similarity=0.9, merge_input_similarity=0.9, merge_min_evidence=1)
+        config = LifecycleConfig(
+            merge_similarity=0.9, merge_input_similarity=0.9, merge_min_evidence=1
+        )
         candidates = find_merge_candidates(memories, config, use_index=True)
         assert len(candidates) > 0  # Should find duplicates
         # Should not crash
@@ -1078,7 +1104,9 @@ class TestAdversarialRobustness:
         config = LifecycleConfig()
         for i in range(3):
             for j in range(i + 1, 3):
-                result = analyze_supersession(memories[i], memories[j], config, clock=lambda: 1000.0)
+                result = analyze_supersession(
+                    memories[i], memories[j], config, clock=lambda: 1000.0
+                )
                 # Equal strength contradictions should not supersede
                 assert result.should_supersede is False
 
@@ -1106,7 +1134,9 @@ class TestAdversarialRobustness:
 
     def test_all_identical_memories(self) -> None:
         memories = [_mem(i, "same", "same", succ=5) for i in range(20)]
-        config = LifecycleConfig(merge_similarity=0.9, merge_input_similarity=0.9, merge_min_evidence=1)
+        config = LifecycleConfig(
+            merge_similarity=0.9, merge_input_similarity=0.9, merge_min_evidence=1
+        )
         candidates = find_merge_candidates(memories, config, use_index=True)
         assert len(candidates) > 0
 
@@ -1146,7 +1176,9 @@ class TestPerformanceCertification:
 
     def _measure_candidate_gen(self, n: int) -> dict:
         memories = _pool(n, seed=42)
-        config = LifecycleConfig(merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1)
+        config = LifecycleConfig(
+            merge_similarity=0.3, merge_input_similarity=0.2, merge_min_evidence=1
+        )
 
         start = time.time()
         candidates = find_merge_candidates(memories, config, use_index=True)

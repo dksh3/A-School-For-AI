@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from core.agent.observer import observe
+from core.agent.observer import observe, safe_str
 
 WORKFLOW_FILE = "workflows.json"
 WORKFLOW_DEFS_FILE = "workflow_defs.json"
@@ -70,9 +70,12 @@ class WorkflowResult:
 
 def register_workflow(name: str, phases: list[str]) -> bool:
     """Register a custom workflow for this process. Returns False if invalid."""
-    if not name or not name.strip():
+    if not isinstance(name, str) or not name.strip():
         return False
-    cleaned = [p.strip() for p in phases if isinstance(p, str) and p.strip()]
+    try:
+        cleaned = [p.strip() for p in phases if isinstance(p, str) and p.strip()]
+    except Exception:
+        return False
     if not cleaned:
         return False
     _CUSTOM[name] = cleaned
@@ -95,9 +98,9 @@ def _defs_path(worktree: Path) -> Path:
 def _load_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     try:
         raw = path.read_text(encoding="utf-8")
-    except FileNotFoundError:
+        data = json.loads(raw)
+    except (OSError, ValueError, TypeError):
         return dict(fallback)
-    data = json.loads(raw)
     return data if isinstance(data, dict) else dict(fallback)
 
 
@@ -183,8 +186,24 @@ def _latest_active(state: dict[str, Any], name: str) -> dict[str, Any] | None:
     return None
 
 
+def _phase_list(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    """Phases of a run entry, keeping only dict-shaped phase records."""
+    raw = entry.get("phases", [])
+    if not isinstance(raw, list):
+        return []
+    return [p for p in raw if isinstance(p, dict)]
+
+
+def _as_int(value: Any, default: int = 0) -> int:
+    """Coerce any value to int; never raises."""
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
 def _current_index(entry: dict[str, Any]) -> int:
-    phases = entry.get("phases", [])
+    phases = _phase_list(entry)
     for i, phase in enumerate(phases):
         if phase.get("status") == "active":
             return i
@@ -196,13 +215,13 @@ def _current_index(entry: dict[str, Any]) -> int:
 
 def _completed(entry: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
-    for phase in entry.get("phases", []):
+    for phase in _phase_list(entry):
         if phase.get("status") != "done":
             continue
         out.append(
             {
-                "name": phase.get("name", ""),
-                "duration_ms": int(phase.get("duration_ms", 0)),
+                "name": safe_str(phase.get("name", "")),
+                "duration_ms": _as_int(phase.get("duration_ms", 0)),
                 "status": "done",
             }
         )
@@ -310,7 +329,7 @@ def _do_advance(
             return _err(name, "workflow already aborted")
         return _err(name, f"workflow not started: {name}")
 
-    phases: list[dict[str, Any]] = entry.get("phases", [])
+    phases: list[dict[str, Any]] = _phase_list(entry)
     idx = _current_index(entry)
     if idx >= len(phases):
         entry["state"] = "complete"
@@ -346,7 +365,7 @@ def _do_advance(
     entry["state"] = "complete"
     entry["finished_at"] = _now_iso()
     _save_json(_state_path(worktree), state)
-    total_ms = sum(int(p.get("duration_ms", 0)) for p in phases)
+    total_ms = sum(_as_int(p.get("duration_ms", 0)) for p in phases)
     _record(worktree, f"workflow complete: {name} in {total_ms}ms")
     guidance = f"workflow '{name}' complete in {total_ms}ms — record the outcome."
     return WorkflowResult(
@@ -401,7 +420,7 @@ def _do_status(state: dict[str, Any], name: str) -> WorkflowResult:
             state="idle",
         )
     completed = _completed(entry)
-    total = len(entry.get("phases", []))
+    total = len(_phase_list(entry))
     current = str(entry.get("current_phase", ""))
     state_str = str(entry.get("state", "idle"))
     shown = current or "-"
@@ -498,16 +517,20 @@ def workflow(
     if os.environ.get("SCHOOL_WORKFLOW", "") == "0":
         return WorkflowResult(
             ok=True,
-            workflow=name,
+            workflow=safe_str(name),
             phase="",
             phases=[],
             guidance="workflow disabled",
             state="disabled",
         )
+    name_s = safe_str(name)
+    action_s = safe_str(action)
+    phase_s = None if phase is None else safe_str(phase)
+    notes_s = None if notes is None else safe_str(notes)
     try:
-        return _dispatch(Path(worktree), name, action, phase, notes)
-    except (OSError, ValueError, TypeError) as exc:
-        return _err(name, str(exc))
+        return _dispatch(Path(worktree), name_s, action_s, phase_s, notes_s)
+    except Exception as exc:
+        return _err(name_s, safe_str(exc, 300) or type(exc).__name__)
 
 
 __all__ = ["BUILTINS", "WorkflowResult", "register_workflow", "workflow"]

@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.routing.v26.experience import Experience, ExperienceOutcome, is_promotable
+from core.skillgen.types import safe_float, safe_str
 
 # ---------------------------------------------------------------------------
 # Config (env-overridable; see budget.py for model-call budget)
@@ -74,9 +75,9 @@ class Candidate:
         return self.experience.experience_id
 
 
-def detect_trivial(text: str) -> bool:
+def detect_trivial(text: Any) -> bool:
     """True when the experience describes a trivial action."""
-    norm = " ".join(text.lower().split())
+    norm = " ".join(safe_str(text, 100_000).lower().split())
     if len(norm) < 40 and not any(
         h in norm for h in _SOLUTION_HINTS + _RECURRENCE_HINTS
     ):
@@ -86,45 +87,68 @@ def detect_trivial(text: str) -> bool:
 
 
 def _has_any(text: str, hints: tuple[str, ...]) -> bool:
-    low = text.lower()
+    low = safe_str(text, 100_000).lower()
     return any(h in low for h in hints)
 
 
 def extract_signals(experience: Experience) -> dict[str, bool]:
-    """Cheap deterministic signals for an experience."""
-    content = f"{experience.observation} {experience.action}".strip()
-    feedback = experience.feedback.lower()
-    meta = {str(k).lower() for k in experience.metadata}
-    tags = {t.lower() for t in experience.tags}
-    success = experience.outcome == ExperienceOutcome.SUCCESS
-    return {
-        "success": success,
-        "non_trivial": not detect_trivial(content),
-        "solution": _has_any(content, _SOLUTION_HINTS)
-        or bool({"solution", "fix", "resolved"} & tags)
-        or "solution" in meta,
-        "recurrence": _has_any(content, _RECURRENCE_HINTS),
-        "positive_feedback": bool(feedback)
-        and any(p in feedback for p in _POSITIVE_FEEDBACK),
-        "efficiency": _has_any(content, _EFFICIENCY_HINTS)
-        or bool({"tokens_saved", "tool_calls_reduced"} & meta),
-        "error_avoided": ("avoided" in content or "prevented" in content
-                          and "error" in content) or "avoided_error" in meta,
-        "previously_unresolved": "previously_unresolved" in meta
-        or "was failing" in content.lower() or "used to fail" in content.lower(),
-        "reused": bool(int(_meta_int(experience, "reuse_count")) >= 2),
-        "user_positive": "positive" in meta or "user_feedback" in meta,
-    }
+    """Cheap deterministic signals for an experience. Never raises."""
+    try:
+        content = f"{safe_str(experience.observation, 5000)} " \
+                  f"{safe_str(experience.action, 5000)}".strip()
+        feedback = safe_str(experience.feedback, 5000).lower()
+        try:
+            meta = {safe_str(k, 100).lower() for k in experience.metadata}
+        except Exception:  # noqa: BLE001 - hostile mapping
+            meta = set()
+        try:
+            tags = {safe_str(t, 100).lower() for t in experience.tags}
+        except Exception:  # noqa: BLE001 - hostile tag container
+            tags = set()
+        try:
+            success = experience.outcome == ExperienceOutcome.SUCCESS
+        except Exception:  # noqa: BLE001 - hostile outcome value
+            success = False
+        return {
+            "success": success,
+            "non_trivial": not detect_trivial(content),
+            "solution": _has_any(content, _SOLUTION_HINTS)
+            or bool({"solution", "fix", "resolved"} & tags)
+            or "solution" in meta,
+            "recurrence": _has_any(content, _RECURRENCE_HINTS),
+            "positive_feedback": bool(feedback)
+            and any(p in feedback for p in _POSITIVE_FEEDBACK),
+            "efficiency": _has_any(content, _EFFICIENCY_HINTS)
+            or bool({"tokens_saved", "tool_calls_reduced"} & meta),
+            "error_avoided": ("avoided" in content or "prevented" in content
+                              and "error" in content) or "avoided_error" in meta,
+            "previously_unresolved": "previously_unresolved" in meta
+            or "was failing" in content.lower() or "used to fail" in content.lower(),
+            "reused": bool(int(_meta_int(experience, "reuse_count")) >= 2),
+            "user_positive": "positive" in meta or "user_feedback" in meta,
+        }
+    except Exception:  # noqa: BLE001 - hostile experience: no signals
+        return {k: False for k in _SIGNAL_KEYS}
+
+
+_SIGNAL_KEYS = (
+    "success", "non_trivial", "solution", "recurrence", "positive_feedback",
+    "efficiency", "error_avoided", "previously_unresolved", "reused",
+    "user_positive",
+)
 
 
 def _meta_int(experience: Experience, key: str) -> int:
-    for k, v in experience.metadata.items():
-        if str(k).lower() == key:
-            try:
-                return int(v)
-            except (TypeError, ValueError):
-                return 0
-    return 0
+    try:
+        for k, v in experience.metadata.items():
+            if safe_str(k, 100).lower() == key:
+                try:
+                    return int(v)
+                except (TypeError, ValueError):
+                    return 0
+        return 0
+    except Exception:  # noqa: BLE001 - hostile mapping
+        return 0
 
 
 def score_candidate(
@@ -136,44 +160,51 @@ def score_candidate(
 
     Weights: usefulness 0.30, repeatability 0.25, novelty 0.15,
     impact 0.15, reliability 0.15. Configurable thresholds gate the
-    model call in pipeline.py; weights stay fixed in Phase 1.
+    model call in pipeline.py; weights stay fixed in Phase 1. Never raises.
     """
-    usefulness = (
-        0.5
-        + (0.2 if signals["success"] else 0.0)
-        + (0.15 if signals["positive_feedback"] or signals["user_positive"] else 0.0)
-        + (0.15 if signals["solution"] else 0.0)
-    )
-    repeatability = (
-        (0.6 if signals["recurrence"] else 0.0)
-        + (0.3 if signals["previously_unresolved"] or signals["error_avoided"] else 0.0)
-        + (0.1 if signals["efficiency"] else 0.0)
-        + (0.2 if signals["reused"] else 0.0)
-    )
-    repeatability = min(repeatability, 1.0)
-    impact = min(
-        1.0,
-        (0.4 if signals["efficiency"] else 0.0)
-        + (0.3 if signals["error_avoided"] else 0.0)
-        + (0.3 if signals["previously_unresolved"] else 0.0),
-    )
-    reliability = experience.confidence
-    factors = {
-        "usefulness": round(min(usefulness, 1.0), 4),
-        "repeatability": round(repeatability, 4),
-        "novelty": round(max(0.0, min(novelty, 1.0)), 4),
-        "impact": round(impact, 4),
-        "reliability": round(reliability, 4),
-    }
-    score = (
-        0.30 * factors["usefulness"]
-        + 0.25 * factors["repeatability"]
-        + 0.15 * factors["novelty"]
-        + 0.15 * factors["impact"]
-        + 0.15 * factors["reliability"]
-    )
-    reasons = [k for k, v in factors.items() if v > 0.5]
-    return round(score, 4), factors, reasons
+    try:
+        sig = {
+            key: bool(signals.get(key, False))
+            for key in _SIGNAL_KEYS
+        } if isinstance(signals, dict) else {key: False for key in _SIGNAL_KEYS}
+        usefulness = (
+            0.5
+            + (0.2 if sig["success"] else 0.0)
+            + (0.15 if sig["positive_feedback"] or sig["user_positive"] else 0.0)
+            + (0.15 if sig["solution"] else 0.0)
+        )
+        repeatability = (
+            (0.6 if sig["recurrence"] else 0.0)
+            + (0.3 if sig["previously_unresolved"] or sig["error_avoided"] else 0.0)
+            + (0.1 if sig["efficiency"] else 0.0)
+            + (0.2 if sig["reused"] else 0.0)
+        )
+        repeatability = min(repeatability, 1.0)
+        impact = min(
+            1.0,
+            (0.4 if sig["efficiency"] else 0.0)
+            + (0.3 if sig["error_avoided"] else 0.0)
+            + (0.3 if sig["previously_unresolved"] else 0.0),
+        )
+        reliability = max(0.0, min(1.0, safe_float(getattr(experience, "confidence", 0.5), 0.5)))
+        factors = {
+            "usefulness": round(min(usefulness, 1.0), 4),
+            "repeatability": round(repeatability, 4),
+            "novelty": round(max(0.0, min(safe_float(novelty, 1.0), 1.0)), 4),
+            "impact": round(impact, 4),
+            "reliability": round(reliability, 4),
+        }
+        score = (
+            0.30 * factors["usefulness"]
+            + 0.25 * factors["repeatability"]
+            + 0.15 * factors["novelty"]
+            + 0.15 * factors["impact"]
+            + 0.15 * factors["reliability"]
+        )
+        reasons = [k for k, v in factors.items() if v > 0.5]
+        return round(score, 4), factors, reasons
+    except Exception:  # noqa: BLE001 - hostile inputs: zero score
+        return 0.0, {}, []
 
 
 def detect(
@@ -185,28 +216,35 @@ def detect(
 
     Returns None when the experience must not consume a model call.
     """
-    ok, _reason = is_promotable(experience)
-    if not ok:
+    try:
+        ok, _reason = is_promotable(experience)
+        if not ok:
+            return None
+        content = (
+            f"{safe_str(experience.observation, 5000)} "
+            f"{safe_str(experience.action, 5000)}"
+        ).strip()
+        if detect_trivial(content):
+            return None
+        signals = extract_signals(experience)
+        novelty = max(0.0, 1.0 - safe_float(existing_similarity, 0.0))
+        score, factors, reasons = score_candidate(experience, signals, novelty)
+        merge_hint = safe_str(existing_merge_hint, 100)
+        if novelty < MIN_NOVELTY and merge_hint:
+            # Near-duplicate of an existing skill: still a candidate, but routed
+            # to the duplicate/merge path with a smaller score contribution.
+            reasons.append(f"merge_hint:{merge_hint}")
+        return Candidate(
+            experience=experience,
+            score=score,
+            signals=signals,
+            factors=factors,
+            reasons=reasons,
+            novelty=novelty,
+            merge_hint=merge_hint,
+        )
+    except Exception:  # noqa: BLE001 - hostile experience: never a candidate
         return None
-    content = f"{experience.observation} {experience.action}".strip()
-    if detect_trivial(content):
-        return None
-    signals = extract_signals(experience)
-    novelty = max(0.0, 1.0 - existing_similarity)
-    score, factors, reasons = score_candidate(experience, signals, novelty)
-    if novelty < MIN_NOVELTY and existing_merge_hint:
-        # Near-duplicate of an existing skill: still a candidate, but routed
-        # to the duplicate/merge path with a smaller score contribution.
-        reasons.append(f"merge_hint:{existing_merge_hint}")
-    return Candidate(
-        experience=experience,
-        score=score,
-        signals=signals,
-        factors=factors,
-        reasons=reasons,
-        novelty=novelty,
-        merge_hint=existing_merge_hint,
-    )
 
 
 def to_report(candidate: Candidate) -> dict[str, Any]:

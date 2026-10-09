@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from core.agent.observer import observe
+from core.agent.observer import observe, safe_str
 
 DOC_CACHE_FILE = "docs_cache.json"
 MAX_CACHE_ENTRIES = 100
@@ -68,9 +68,9 @@ def _fetched_at(entry: dict[str, Any]) -> float:
 def _load_cache(worktree: Path) -> dict[str, Any]:
     try:
         raw = _cache_path(worktree).read_text(encoding="utf-8")
-    except FileNotFoundError:
+        data = json.loads(raw)
+    except (OSError, ValueError, TypeError):
         return {}
-    data = json.loads(raw)
     return data if isinstance(data, dict) else {}
 
 
@@ -119,7 +119,11 @@ def _search_key(query: str, library: str | None, version: str | None) -> str:
 
 def _cached_result(query: str, entry: dict[str, Any]) -> DocResult:
     content, saved = _skeletonize(str(entry.get("content", "")))
-    tokens_saved = saved or max(0, int(entry.get("tokens", 0)) - _est_tokens(content))
+    try:
+        base_tokens = int(entry.get("tokens", 0))
+    except Exception:
+        base_tokens = 0
+    tokens_saved = saved or max(0, base_tokens - _est_tokens(content))
     return DocResult(
         ok=True,
         query=query,
@@ -185,7 +189,7 @@ def _fetch(
             cached=False,
             tokens_saved=0,
             learnings=_record(worktree, query),
-            error=f"fetch failed: {exc}",
+            error=f"fetch failed: {safe_str(exc, 200)}",
         )
 
     content, saved = _skeletonize(raw)
@@ -220,19 +224,24 @@ def fetch_docs(
     is skeletonized for token efficiency, and every fetch attempt is recorded in
     the observer learning trail. Network failure falls back to any cached entry.
     """
+    query_s = safe_str(query)
     if os.environ.get("SCHOOL_DOCS", "") == "0":
         return DocResult(
             ok=True,
-            query=query,
+            query=query_s,
             source="disabled",
             content="",
             cached=False,
             tokens_saved=0,
         )
-    if not query or not str(query).strip():
+    try:
+        is_empty = not (query and str(query).strip())
+    except Exception:
+        is_empty = True
+    if is_empty:
         return DocResult(
             ok=False,
-            query=str(query or ""),
+            query=query_s,
             source="",
             content="",
             cached=False,
@@ -240,16 +249,22 @@ def fetch_docs(
             error="empty query",
         )
     try:
-        return _fetch(Path(worktree), query, library, version, use_cache)
-    except (OSError, ValueError, TypeError) as exc:
+        use = bool(use_cache)
+    except Exception:
+        use = True
+    library_s = None if library is None else safe_str(library, 200)
+    version_s = None if version is None else safe_str(version, 200)
+    try:
+        return _fetch(Path(worktree), query_s, library_s, version_s, use)
+    except Exception as exc:
         return DocResult(
             ok=False,
-            query=query,
+            query=query_s,
             source="",
             content="",
             cached=False,
             tokens_saved=0,
-            error=str(exc),
+            error=safe_str(exc, 300) or type(exc).__name__,
         )
 
 

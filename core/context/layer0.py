@@ -22,16 +22,29 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+def _s(v: Any) -> str:
+    try:
+        return v if isinstance(v, str) else ("" if v is None else str(v))
+    except Exception:  # noqa: BLE001 — coercion must never raise
+        return ""
+
+
 def message_tokens(message: Any) -> int:
     if not isinstance(message, dict):
         return 0
-    return estimate_tokens(str(message.get("content") or "")) + estimate_tokens(
-        str(message.get("tool_calls") or "")
-    )
+    try:
+        content = message.get("content")
+        tool_calls = message.get("tool_calls")
+    except Exception:  # noqa: BLE001
+        return 0
+    return estimate_tokens(_s(content)) + estimate_tokens(_s(tool_calls))
 
 
 def total_tokens(messages: list[Any]) -> int:
-    return sum(message_tokens(m) for m in messages)
+    try:
+        return sum(message_tokens(m) for m in messages)
+    except Exception:  # noqa: BLE001
+        return 0
 
 
 def protected_from(messages: list[Any]) -> int:

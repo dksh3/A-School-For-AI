@@ -57,7 +57,9 @@ class TestV232AdversarialRegression:
             scorer_config=ScorerConfig(), conflict_config=ConflictConfig(),
             confidence_config=ConfidenceConfig(),
         )
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "bubble_sort(x)"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "bubble_sort(x)"})
+        )
         learner.learn(LearningInput(observation={"input": "reverse a string", "output": "s[::-1]"}))
         learner.learn(LearningInput(observation={"input": "find maximum", "output": "max(x)"}))
 
@@ -72,7 +74,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(),
         )
         for _ in range(4):
-            learner.learn(LearningInput(observation={"input": "sort a list", "output": "bubble_sort(x)"}))
+            learner.learn(
+                LearningInput(observation={"input": "sort a list", "output": "bubble_sort(x)"})
+            )
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
 
         v232, r = _get_v232_confidence(learner, "sort a list")
@@ -149,7 +153,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(),
         )
         for _ in range(10):
-            learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
+            learner.learn(
+                LearningInput(observation={"input": "sort a list", "output": "sorted(x)"})
+            )
         for _ in range(5):
             learner.feedback("sort a list", "sorted(x)", correct=True)
 
@@ -166,7 +172,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(),
         )
         for _ in range(10):
-            dup_learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
+            dup_learner.learn(
+                LearningInput(observation={"input": "sort a list", "output": "sorted(x)"})
+            )
         for _ in range(5):
             dup_learner.feedback("sort a list", "sorted(x)", correct=True)
 
@@ -177,7 +185,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(),
         )
         for i in range(5):
-            ind_learner.learn(LearningInput(observation={"input": f"sort_{i} a list", "output": "sorted(x)"}))
+            ind_learner.learn(
+                LearningInput(observation={"input": f"sort_{i} a list", "output": "sorted(x)"})
+            )
         for i in range(5):
             ind_learner.feedback(f"sort_{i} a list", "sorted(x)", correct=True)
 
@@ -194,7 +204,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(abstention_threshold=0.3),
         )
         # Learn some data, but with weak evidence
-        learner.learn(LearningInput(observation={"input": "process data", "output": "transform(x)"}))
+        learner.learn(
+            LearningInput(observation={"input": "process data", "output": "transform(x)"})
+        )
         learner.feedback("process data", "transform(x)", correct=True)
 
         # Query something lexically similar but with no feedback
@@ -211,7 +223,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(abstention_threshold=0.3),
         )
         for _ in range(5):
-            learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
+            learner.learn(
+                LearningInput(observation={"input": "sort a list", "output": "sorted(x)"})
+            )
         for _ in range(10):
             learner.feedback("sort a list", "sorted(x)", correct=True)
 
@@ -227,7 +241,9 @@ class TestV232AdversarialRegression:
             confidence_config=ConfidenceConfig(),
         )
         for _ in range(10):
-            learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
+            learner.learn(
+                LearningInput(observation={"input": "sort a list", "output": "sorted(x)"})
+            )
         for _ in range(5):
             learner.feedback("sort a list", "sorted(x)", correct=True)
 
@@ -244,9 +260,13 @@ class TestV232AdversarialRegression:
         )
         # 3 duplicates + 2 independent = 3 unique pairs
         for _ in range(3):
-            learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
+            learner.learn(
+                LearningInput(observation={"input": "sort a list", "output": "sorted(x)"})
+            )
         learner.learn(LearningInput(observation={"input": "order items", "output": "sorted(x)"}))
-        learner.learn(LearningInput(observation={"input": "arrange elements", "output": "sorted(x)"}))
+        learner.learn(
+            LearningInput(observation={"input": "arrange elements", "output": "sorted(x)"})
+        )
         for _ in range(5):
             learner.feedback("sort a list", "sorted(x)", correct=True)
 
@@ -297,7 +317,8 @@ class TestV232AdversarialRegression:
 
     def test_persistence_preserves_config(self):
         """Save/load should preserve independence and abstention config."""
-        import tempfile, os
+        import os
+        import tempfile
         learner = HybridSimilarityLearner(
             k=5, lexical_weight=1.0, semantic_weight=0.0,
             scorer_config=ScorerConfig(), conflict_config=ConflictConfig(),

@@ -30,14 +30,10 @@ from core.learner.knowledge_ops import (
     analyze_redundancy,
     analyze_supersession,
     find_merge_candidates,
-    is_eligible_for_archive,
 )
 from core.learner.lifecycle import (
-    HealthSignals,
     LifecycleConfig,
-    MemoryState,
     compute_decay,
-    compute_health_score,
     compute_reinforcement,
 )
 from core.learner.lifecycle_manager import LifecycleManager
@@ -294,7 +290,7 @@ class TestConflictingFeedback:
         health1 = manager.evaluate_health(example, HybridMemory())
 
         # Alternating feedback
-        for i in range(5):
+        for _i in range(5):
             example.success_count += 1
             example.failure_count += 1
             manager.evaluate_health(example, HybridMemory())
@@ -527,8 +523,6 @@ class TestDeterministicBehavior:
 
     def test_deterministic_decay(self):
         config = LifecycleConfig()
-        clock_value = 1000000.0
-        clock = lambda: clock_value
 
         # Same inputs should produce same outputs
         result1 = compute_decay(0.8, 30.0, 0.8, 3, config)
@@ -555,7 +549,8 @@ class TestMaintenanceInterval:
     def test_maintenance_interval(self):
         config = LifecycleConfig(maintenance_interval_hours=1.0)
         clock_value = 1000000.0
-        clock = lambda: clock_value
+        def clock():
+            return clock_value
 
         manager = LifecycleManager(config, clock=clock)
         memory = HybridMemory()
@@ -598,7 +593,7 @@ class TestProvenanceTracking:
         manager = LifecycleManager(config)
 
         example = _make_example()
-        event = manager.archive(example, "Test archival")
+        manager.archive(example, "Test archival")
 
         # Check provenance
         state = manager.get_state(example.id)

@@ -25,15 +25,28 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _json_default(o: Any) -> Any:
+    try:
+        return o if isinstance(o, (str, int, float, bool, type(None))) else str(o)
+    except Exception:  # noqa: BLE001
+        return "[unserializable]"
+
+
 def context_dir(worktree: str) -> Path:
-    return resolve_memory_dir(worktree).parent / "context"
+    try:
+        return resolve_memory_dir(worktree).parent / "context"
+    except Exception:  # noqa: BLE001 — fail-open to a safe temp location
+        return Path(tempfile.gettempdir()) / "school-context"
 
 
 def session_file(worktree: str, session_id: str) -> Path:
-    safe = re.sub(r"[^A-Za-z0-9._-]", "_", session_id or "default")
-    safe = re.sub(r"\.{2,}", "_", safe)
-    safe = safe[:80].rstrip(". ")
-    return context_dir(worktree) / f"{safe}.blocks.json"
+    try:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", str(session_id or "default"))
+        safe = re.sub(r"\.{2,}", "_", safe)
+        safe = safe[:80].rstrip(". ") or "default"
+        return context_dir(worktree) / f"{safe}.blocks.json"
+    except Exception:  # noqa: BLE001
+        return Path(tempfile.gettempdir()) / "school-context" / "default.blocks.json"
 
 
 class BlockStore:
@@ -61,8 +74,15 @@ class BlockStore:
             return out
         except (OSError, json.JSONDecodeError, ValueError, TypeError, IndexError, KeyError):
             return []
+        except Exception:  # noqa: BLE001 — fail-open on any hostile content
+            return []
 
     def save(self, blocks: list[Block]) -> None:
+        # fail-open: persistence must never raise
+        with contextlib.suppress(Exception):
+            self._save_inner(blocks)
+
+    def _save_inner(self, blocks: list[Block]) -> None:
         max_blocks = _env_int("SCHOOL_COMPRESS_MAX_BLOCKS", _MAX_BLOCKS_DEFAULT)
         max_bytes = _env_int("SCHOOL_COMPRESS_MAX_BYTES", _MAX_BYTES_DEFAULT)
         kept = blocks[-max_blocks:] if max_blocks > 0 else []
@@ -70,12 +90,12 @@ class BlockStore:
             "version": 1,
             "blocks": [b.to_dict() for b in kept],
         }
-        text = json.dumps(payload, ensure_ascii=False, indent=1)
+        text = json.dumps(payload, ensure_ascii=False, indent=1, default=_json_default)
         # hard byte bound: drop oldest blocks until under limit
         while len(text.encode("utf-8")) > max_bytes and kept:
             kept = kept[1:]
             payload["blocks"] = [b.to_dict() for b in kept]
-            text = json.dumps(payload, ensure_ascii=False, indent=1)
+            text = json.dumps(payload, ensure_ascii=False, indent=1, default=_json_default)
         with _LOCK:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(
@@ -91,21 +111,30 @@ class BlockStore:
                 raise
 
     def add(self, block: Block) -> None:
-        with _LOCK:
-            blocks = self.load()
-            blocks.append(block)
-            self.save(blocks)
+        try:
+            with _LOCK:
+                blocks = self.load()
+                blocks.append(block)
+                self.save(blocks)
+        except Exception:  # noqa: BLE001 — fail-open
+            pass
 
     def update(self, block: Block) -> None:
-        with _LOCK:
-            blocks = self.load()
-            for i, existing in enumerate(blocks):
-                if existing.id == block.id:
-                    blocks[i] = block
-                    break
-            else:
-                blocks.append(block)
-            self.save(blocks)
+        try:
+            with _LOCK:
+                blocks = self.load()
+                for i, existing in enumerate(blocks):
+                    if existing.id == block.id:
+                        blocks[i] = block
+                        break
+                else:
+                    blocks.append(block)
+                self.save(blocks)
+        except Exception:  # noqa: BLE001 — fail-open
+            pass
 
     def get(self, block_id: str) -> Block | None:
-        return next((b for b in self.load() if b.id == block_id), None)
+        try:
+            return next((b for b in self.load() if b.id == block_id), None)
+        except Exception:  # noqa: BLE001 — fail-open
+            return None

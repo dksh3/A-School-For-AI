@@ -3,7 +3,10 @@
 class TestBridgeExtension:
     def test_new_commands_registered(self):
         from school.bridge import _COMMANDS
-        new_commands = ["learn", "diagnose", "conflict", "confidence", "deduplicate", "lifecycle", "search", "knowledge"]
+        new_commands = [
+            "learn", "diagnose", "conflict", "confidence",
+            "deduplicate", "lifecycle", "search", "knowledge",
+        ]
         for cmd in new_commands:
             assert cmd in _COMMANDS, f"Command '{cmd}' not in _COMMANDS"
 

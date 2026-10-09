@@ -104,7 +104,7 @@ def _to_repo_meta(item: dict[str, Any]) -> RepoMeta | None:
             fork=bool(item.get("fork", False)),
             size_kb=int(item.get("size") or 0),
         )
-    except (TypeError, ValueError, AttributeError):
+    except (TypeError, ValueError, AttributeError, RuntimeError, OverflowError):
         return None
 
 
@@ -136,6 +136,11 @@ def search(
                     break  # fail closed: stop early, keep partial results
                 continue
             cache.set(cache_key, items)
+        if not isinstance(items, (list, tuple, set)):
+            try:
+                items = list(items) if items is not None else []
+            except Exception:  # noqa: BLE001 — hostile __iter__ must not escape
+                items = []
         for item in items:
             if not isinstance(item, dict) or _to_repo_meta(item) is None:
                 key = "malformed_item"

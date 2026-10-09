@@ -2,10 +2,23 @@
 
 from __future__ import annotations
 
-from core.routing.v26.identity import AgentIdentity
+from core.routing.v26.identity import (
+    AgentIdentity,
+    coerce_float,
+    coerce_int,
+    coerce_tag_set,
+    coerce_text,
+)
 from core.routing.v26.memory_manager import MemoryManager
 from core.routing.v26.memory_types import MemoryRequest
-from core.routing.v26.tools.base import Tool, ToolResult
+from core.routing.v26.tools.base import (
+    Tool,
+    ToolResult,
+    error_result,
+    fail_open,
+    fail_open_validate,
+    safe_memory_dict,
+)
 
 
 class RecallTool(Tool):
@@ -28,8 +41,16 @@ class RecallTool(Tool):
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query text."},
-                "agent_id": {"type": "string", "description": "Agent identifier.", "default": "default"},
-                "limit": {"type": "integer", "description": "Maximum memories to return.", "default": 10},
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent identifier.",
+                    "default": "default",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum memories to return.",
+                    "default": 10,
+                },
                 "minimum_confidence": {
                     "type": "number",
                     "description": "Minimum confidence threshold [0,1].",
@@ -50,20 +71,37 @@ class RecallTool(Tool):
             "required": ["query"],
         }
 
+    @fail_open_validate
     def validate(self, **kwargs) -> list[str]:
-        errors = super().validate(**kwargs)
-        query = kwargs.get("query", "")
-        if not query:
+        errors: list[str] = []
+        raw = kwargs.get("query", "")
+        try:
+            empty = not raw
+        except Exception:  # noqa: BLE001 - hostile query is a validation error
+            empty = True
+        if empty or not coerce_text(raw):
             errors.append("query is required and must not be empty")
         return errors
 
+    @fail_open
     def execute(self, **kwargs) -> ToolResult:
-        query: str = kwargs["query"]
-        agent_id: str = kwargs.get("agent_id", "default")
-        limit: int = kwargs.get("limit", 10)
-        minimum_confidence: float = kwargs.get("minimum_confidence", 0.0)
-        context_budget: int = kwargs.get("context_budget", 4096)
-        tags: list[str] = kwargs.get("tags", [])
+        raw_query = kwargs.get("query", "")
+        try:
+            query_empty = not raw_query
+        except Exception:  # noqa: BLE001
+            query_empty = True
+        query = coerce_text(raw_query)
+        if query_empty or not query:
+            return error_result(self.name, "query is required and must not be empty")
+
+        agent_id = coerce_text(kwargs.get("agent_id", "default"), "default") or "default"
+        limit = coerce_int(kwargs.get("limit", 10), 10)
+        # NaN/inf flow through so request validation rejects them gracefully
+        minimum_confidence = coerce_float(
+            kwargs.get("minimum_confidence", 0.0), 0.0, finite=False
+        )
+        context_budget = coerce_int(kwargs.get("context_budget", 4096), 4096)
+        tags = coerce_tag_set(kwargs.get("tags", []))
 
         agent = AgentIdentity.create(agent_id=agent_id)
         request = MemoryRequest(
@@ -72,7 +110,7 @@ class RecallTool(Tool):
             limit=limit,
             minimum_confidence=minimum_confidence,
             context_budget=context_budget,
-            tags=frozenset(tags),
+            tags=tags,
         )
 
         response = self._manager.request_memory(request)
@@ -80,7 +118,7 @@ class RecallTool(Tool):
         return ToolResult(
             success=True,
             data={
-                "memories": [m.to_dict() for m in response.memories],
+                "memories": [safe_memory_dict(m) for m in response.memories],
                 "total": response.total,
                 "truncated": response.truncated,
                 "context_cost": response.context_cost,

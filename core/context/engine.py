@@ -58,11 +58,14 @@ class ContextEngine:
         self._task_key = f"compress:{session_id}"
 
     def should_compress(self, messages: list[Any]) -> bool:
-        if os.environ.get("SCHOOL_COMPRESS", "") == "0":
+        try:
+            if os.environ.get("SCHOOL_COMPRESS", "") == "0":
+                return False
+            if not messages or self.window <= 0:
+                return False
+            return total_tokens(messages) / self.window >= self.trigger
+        except Exception:  # fail open — never raise
             return False
-        if not messages or self.window <= 0:
-            return False
-        return total_tokens(messages) / self.window >= self.trigger
 
     def _over(self, tokens: int) -> bool:
         return self.window > 0 and tokens / self.window >= self.trigger
@@ -154,7 +157,10 @@ class ContextEngine:
                 messages=view.messages,
             )
         except Exception:  # fail open — engine never raises
-            raw = list(messages) if isinstance(messages, list) else []
+            try:
+                raw = list(messages) if isinstance(messages, list) else []
+            except Exception:  # noqa: BLE001 — hostile sequence (e.g. _BadList)
+                raw = []
             return CompressionReport(
                 skipped="fail_open", messages=raw, circuit=self.circuit.state.value
             )

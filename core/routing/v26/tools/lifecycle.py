@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
+import math
+
+from core.routing.v26.identity import coerce_text
 from core.routing.v26.memory_manager import MemoryManager
-from core.routing.v26.tools.base import Tool, ToolResult
+from core.routing.v26.tools.base import (
+    Tool,
+    ToolResult,
+    error_result,
+    fail_open,
+    fail_open_validate,
+)
 
 _VALID_ACTIONS = frozenset({"score", "decay", "promote", "archive"})
+_DEFAULT_AMOUNT = 0.1
 
 
 class LifecycleTool(Tool):
@@ -45,19 +55,36 @@ class LifecycleTool(Tool):
             "required": ["action"],
         }
 
+    @fail_open_validate
     def validate(self, **kwargs) -> list[str]:
-        errors = super().validate(**kwargs)
-        action = kwargs.get("action", "")
-        if action not in _VALID_ACTIONS:
-            errors.append(f"Invalid action: {action}. Must be one of: {', '.join(sorted(_VALID_ACTIONS))}")
-        if action in ("promote", "archive") and not kwargs.get("memory_id"):
+        errors: list[str] = []
+        raw_action = kwargs.get("action", "")
+        action = raw_action if isinstance(raw_action, str) else None
+        if action is None or action not in _VALID_ACTIONS:
+            errors.append(
+                f"Invalid action: {coerce_text(raw_action, '<unprintable>')}. "
+                f"Must be one of: {', '.join(sorted(_VALID_ACTIONS))}"
+            )
+        try:
+            has_memory_id = bool(kwargs.get("memory_id"))
+        except Exception:  # noqa: BLE001 - hostile ids count as missing
+            has_memory_id = False
+        if action in ("promote", "archive") and not has_memory_id:
             errors.append(f"memory_id is required for action '{action}'")
         return errors
 
+    @fail_open
     def execute(self, **kwargs) -> ToolResult:
-        action: str = kwargs["action"]
-        memory_id: str = kwargs.get("memory_id", "")
-        amount: float = kwargs.get("amount", 0.1)
+        raw_action = kwargs.get("action", "")
+        action = coerce_text(raw_action)
+        memory_id = coerce_text(kwargs.get("memory_id", ""))
+
+        if action in ("score", "decay"):
+            ok, amount = _resolve_amount(kwargs.get("amount", _DEFAULT_AMOUNT))
+            if not ok:
+                return error_result(self.name, "amount must be a number")
+        else:
+            amount = _DEFAULT_AMOUNT
 
         if action == "score":
             return self._handle_score(memory_id, amount)
@@ -71,7 +98,7 @@ class LifecycleTool(Tool):
         return ToolResult(
             success=False,
             data={},
-            errors=[f"Unknown action: {action}"],
+            errors=[f"Unknown action: {coerce_text(raw_action, '<unprintable>')}"],
             metadata={"tool": self.name},
         )
 
@@ -84,7 +111,8 @@ class LifecycleTool(Tool):
                 errors=[f"Memory not found: {memory_id}"],
                 metadata={"tool": self.name},
             )
-        new_confidence = max(0.0, min(1.0, entry.confidence + amount))
+        current = _entry_confidence(entry)
+        new_confidence = max(0.0, min(1.0, current + amount))
         return ToolResult(
             success=True,
             data={
@@ -106,7 +134,8 @@ class LifecycleTool(Tool):
                 errors=[f"Memory not found: {memory_id}"],
                 metadata={"tool": self.name},
             )
-        new_confidence = max(0.0, entry.confidence - amount)
+        current = _entry_confidence(entry)
+        new_confidence = max(0.0, current - amount)
         return ToolResult(
             success=True,
             data={
@@ -159,3 +188,30 @@ class LifecycleTool(Tool):
             errors=[] if removed else [f"Failed to archive memory: {memory_id}"],
             metadata={"tool": self.name},
         )
+
+
+def _entry_confidence(entry) -> float:
+    """Numeric confidence of an entry; garbage degrades to 0.0."""
+    try:
+        value = float(entry.confidence)
+    except Exception:  # noqa: BLE001
+        return 0.0
+    return value if math.isfinite(value) else 0.0
+
+
+def _resolve_amount(raw: object) -> tuple[bool, float]:
+    """Resolve amount fail-open: NaN/inf -> default, garbage -> not ok."""
+    if raw is None:
+        return True, _DEFAULT_AMOUNT
+    if isinstance(raw, bool):
+        return True, float(raw)
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+        return True, value if math.isfinite(value) else _DEFAULT_AMOUNT
+    if isinstance(raw, str):
+        try:
+            value = float(raw)
+        except ValueError:
+            return False, _DEFAULT_AMOUNT
+        return True, value if math.isfinite(value) else _DEFAULT_AMOUNT
+    return False, _DEFAULT_AMOUNT

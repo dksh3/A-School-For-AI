@@ -161,7 +161,7 @@ class Experience:
             "feedback": self.feedback,
             "confidence": self.confidence,
             "source": self.source,
-            "tags": sorted(self.tags),
+            "tags": sorted(self.tags, key=str),
             "metadata": dict(self.metadata),
         }
 

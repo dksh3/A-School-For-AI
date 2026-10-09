@@ -26,17 +26,12 @@ from core.learner.feature_extractor import FeatureVector
 from core.learner.hybrid_memory import HybridExample, HybridMemory
 from core.learner.knowledge_ops import (
     analyze_redundancy,
-    analyze_supersession,
     find_merge_candidates,
     is_eligible_for_archive,
 )
 from core.learner.lifecycle import (
-    HealthSignals,
     LifecycleConfig,
     MemoryState,
-    compute_decay,
-    compute_health_score,
-    compute_reinforcement,
 )
 from core.learner.lifecycle_manager import LifecycleManager
 

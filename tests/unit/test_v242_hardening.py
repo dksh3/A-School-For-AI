@@ -11,7 +11,6 @@ Tests:
 from __future__ import annotations
 
 import random
-import time
 
 import pytest
 
@@ -20,23 +19,13 @@ from core.learner.knowledge_ops import (
     MergeCandidate,
     RedundancyResult,
     RedundancyType,
-    SupersessionResult,
     TokenInvertedIndex,
-    analyze_redundancy,
-    analyze_supersession,
-    archive_memory,
     compute_semantic_similarity,
     find_merge_candidates,
-    is_eligible_for_archive,
 )
 from core.learner.lifecycle import (
-    HealthSignals,
     LifecycleConfig,
-    LifecycleEvent,
     MemoryState,
-    compute_decay,
-    compute_health_score,
-    compute_reinforcement,
 )
 from core.learner.lifecycle_manager import (
     EventTriggerConfig,
@@ -44,9 +33,7 @@ from core.learner.lifecycle_manager import (
     MaintenanceEvent,
     MaintenanceRecord,
     MemoryLifecycleState,
-    PERSISTENCE_VERSION,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -167,7 +154,7 @@ class TestTokenInvertedIndex:
         """Test with a large vocabulary."""
         index = TokenInvertedIndex()
         words = [f"word{i}" for i in range(1000)]
-        
+
         # Create memories with specific word patterns
         for i in range(100):
             # Memory 0 has words 0-9

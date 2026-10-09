@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from core.learner.confidence import estimate_confidence
-from core.routing.v26.tools.base import Tool, ToolResult
+from core.routing.v26.identity import coerce_float, coerce_int, coerce_text
+from core.routing.v26.tools.base import (
+    Tool,
+    ToolResult,
+    fail_open,
+)
 
 
 class ConfidenceTool(Tool):
@@ -22,8 +27,12 @@ class ConfidenceTool(Tool):
         return {
             "type": "object",
             "properties": {
-                "content": {"type": "string", "description": "The prediction content.", "default": ""},
-                "prediction": {"type": "string", "description": "The predicted output.", "default": ""},
+                "content": {
+                    "type": "string", "description": "The prediction content.", "default": ""
+                },
+                "prediction": {
+                    "type": "string", "description": "The predicted output.", "default": ""
+                },
                 "similarity": {
                     "type": "number",
                     "description": "Base similarity score [0,1].",
@@ -69,15 +78,17 @@ class ConfidenceTool(Tool):
             "required": [],
         }
 
+    @fail_open
     def execute(self, **kwargs) -> ToolResult:
-        similarity: float = kwargs.get("similarity", 0.5)
-        success_count: int = kwargs.get("success_count", 0)
-        failure_count: int = kwargs.get("failure_count", 0)
-        supporting_weight: float = kwargs.get("supporting_weight", 0.0)
-        total_weight: float = kwargs.get("total_weight", 0.0)
-        supporting_count: int = kwargs.get("supporting_count", 0)
-        total_count: int = kwargs.get("total_count", 0)
-        outputs: list[str] = kwargs.get("outputs", [])
+        # Unconvertible numerics fall back to schema defaults; NaN/inf too.
+        similarity = coerce_float(kwargs.get("similarity", 0.5), 0.5)
+        success_count = max(0, coerce_int(kwargs.get("success_count", 0), 0))
+        failure_count = max(0, coerce_int(kwargs.get("failure_count", 0), 0))
+        supporting_weight = coerce_float(kwargs.get("supporting_weight", 0.0), 0.0)
+        total_weight = coerce_float(kwargs.get("total_weight", 0.0), 0.0)
+        supporting_count = max(0, coerce_int(kwargs.get("supporting_count", 0), 0))
+        total_count = max(0, coerce_int(kwargs.get("total_count", 0), 0))
+        outputs = _coerce_outputs(kwargs.get("outputs", []))
 
         result = estimate_confidence(
             similarity=similarity,
@@ -110,3 +121,22 @@ class ConfidenceTool(Tool):
             errors=[],
             metadata={"tool": self.name},
         )
+
+
+def _coerce_outputs(raw: object) -> list[str]:
+    """Coerce outputs to a list of strings; garbage degrades to empty list."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        return [raw]
+    try:
+        iterator = iter(raw)
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    try:
+        for item in iterator:
+            out.append(coerce_text(item))
+    except Exception:  # noqa: BLE001 - hostile iterators degrade to partial list
+        pass
+    return out

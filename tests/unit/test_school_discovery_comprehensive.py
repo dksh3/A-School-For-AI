@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import os
-import shutil
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from school.discovery import BridgeDiscovery, discover_bridge, _find_python
+from school.discovery import BridgeDiscovery, _find_python, discover_bridge
 
 
 class TestFindPython:
@@ -76,7 +74,9 @@ class TestBridgeDiscoveryCascade:
             patch.dict(os.environ, {}, clear=True),
             patch("shutil.which") as mock_which,
         ):
-            mock_which.side_effect = lambda cmd: "/usr/bin/school-bridge" if cmd == "school-bridge" else None
+            mock_which.side_effect = (
+                lambda cmd: "/usr/bin/school-bridge" if cmd == "school-bridge" else None
+            )
             result = discover_bridge(str(tmp_path))
 
         assert result is not None
@@ -158,7 +158,9 @@ class TestCrossPlatform:
             patch("sys.platform", "win32"),
             patch("shutil.which") as mock_which,
         ):
-            mock_which.side_effect = lambda cmd: "/Python314/python.exe" if cmd == "python" else None
+            mock_which.side_effect = (
+                lambda cmd: "/Python314/python.exe" if cmd == "python" else None
+            )
             result = _find_python()
             assert result == "python"
 

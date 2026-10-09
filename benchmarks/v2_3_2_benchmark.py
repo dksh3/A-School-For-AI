@@ -6,36 +6,28 @@ Runs all calibration scenarios, compares V2.3 vs V2.3.2, produces detailed repor
 from __future__ import annotations
 
 import sys
-import time
 from pathlib import Path
-from collections import defaultdict
 
 _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from core.learner.base import LearningInput
-from core.learner.calibration.metrics import (
-    CalibrationCase,
-    compute_full_report,
-    brier_score,
-    expected_calibration_error,
-    discrimination_gap,
-    selective_prediction_accuracy,
-    selective_prediction_coverage,
-    abstention_quality,
-)
-from core.learner.calibration.dataset import build_all_scenarios, run_scenario
-from core.learner.calibration.estimator import (
-    ConfidenceEstimatorConfig,
-    estimate_confidence_v232,
-)
 from core.learner.calibration.calibrator import (
     CalibrationMap,
     build_calibration_map,
     calibrate,
 )
-from core.learner.confidence import ConfidenceConfig, estimate_confidence
+from core.learner.calibration.dataset import build_all_scenarios, run_scenario
+from core.learner.calibration.estimator import (
+    estimate_confidence_v232,
+)
+from core.learner.calibration.metrics import (
+    CalibrationCase,
+    brier_score,
+    compute_full_report,
+)
+from core.learner.confidence import ConfidenceConfig
 from core.learner.conflict import ConflictConfig
 from core.learner.learner_v2 import HybridSimilarityLearner
 from core.learner.retrieval_scorer import ScorerConfig
@@ -165,16 +157,18 @@ def print_report(label: str, cases: list[CalibrationCase]):
     print(f"  Discrimination gap: {report.discrimination_gap:.4f}")
     print(f"  Abstention quality: {report.abstention_quality:.4f}")
 
-    print(f"\n  Selective prediction:")
+    print("\n  Selective prediction:")
     for thresh, acc in sorted(report.selective_accuracy.items()):
         cov = sum(1 for c in cases if c.confidence >= thresh) / len(cases) if cases else 0
         print(f"    conf>={thresh:.1f}: accuracy={acc:.1%}, coverage={cov:.1%}")
 
-    print(f"\n  Reliability curve:")
+    print("\n  Reliability curve:")
     print(f"    {'Bin':>10s} | {'Count':>5s} | {'Mean Conf':>10s} | {'Accuracy':>8s} | {'Gap':>6s}")
     for bucket in report.reliability:
         if bucket.count > 0:
-            print(f"    {bucket.bin_low:.1f}-{bucket.bin_high:.1f} | {bucket.count:5d} | {bucket.mean_confidence:10.4f} | {bucket.accuracy:8.4f} | {bucket.gap:6.4f}")
+            print(f"    {bucket.bin_low:.1f}-{bucket.bin_high:.1f} | {bucket.count:5d} | "
+                  f"{bucket.mean_confidence:10.4f} | {bucket.accuracy:8.4f} | "
+                  f"{bucket.gap:6.4f}")
 
 
 def main():
@@ -194,14 +188,16 @@ def main():
 
         v23_cases = run_v23_scenario(scenario)
         v232_cases = run_v232_raw_scenario(scenario)
-        v232_cal_cases = run_v232_calibrated_scenario(scenario, CalibrationMap(buckets=[], fallback_mode=True))
+        v232_cal_cases = run_v232_calibrated_scenario(
+            scenario, CalibrationMap(buckets=[], fallback_mode=True))
         v23_all.extend(v23_cases)
         v232_all.extend(v232_cases)
         v232_cal_all.extend(v232_cal_cases)
 
         v23_brier = brier_score(v23_cases)
         v232_brier = brier_score(v232_cases)
-        print(f"  V2.3 Brier: {v23_brier:.4f} | V2.3.2 Brier: {v232_brier:.4f} | Delta: {v232_brier-v23_brier:+.4f}")
+        print(f"  V2.3 Brier: {v23_brier:.4f} | V2.3.2 Brier: {v232_brier:.4f} | "
+              f"Delta: {v232_brier-v23_brier:+.4f}")
 
     # Overall reports
     print_report("V2.3 (existing formula)", v23_all)
@@ -223,9 +219,10 @@ def main():
 
     # Version comparison
     print(f"\n{'='*60}")
-    print(f"  VERSION COMPARISON")
+    print("  VERSION COMPARISON")
     print(f"{'='*60}")
-    for label, cases in [("V2.3", v23_all), ("V2.3.2 raw", v232_all), ("V2.3.2 calibrated", v232_cal_all)]:
+    for label, cases in [("V2.3", v23_all), ("V2.3.2 raw", v232_all),
+                         ("V2.3.2 calibrated", v232_cal_all)]:
         r = compute_full_report(cases)
         print(f"  {label:25s}: Brier={r.brier:.4f}, ECE={r.ece:.4f}, "
               f"mean_conf={r.mean_confidence:.4f}, discrim={r.discrimination_gap:.4f}, "

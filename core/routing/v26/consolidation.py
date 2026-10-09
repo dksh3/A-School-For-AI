@@ -187,9 +187,8 @@ def consolidate_experiences(
             continue
 
         key = exp.to_scope().scope_key()
-        if scope is not None:
-            if not scope.includes(exp.to_scope()):
-                continue
+        if scope is not None and not scope.includes(exp.to_scope()):
+            continue
 
         if key not in scope_groups:
             scope_groups[key] = []

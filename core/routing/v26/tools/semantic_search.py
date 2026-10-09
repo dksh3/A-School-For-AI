@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 from core.learner.feature_extractor import FeatureExtractor
-from core.routing.v26.identity import AgentIdentity
+from core.routing.v26.identity import (
+    AgentIdentity,
+    coerce_int,
+    coerce_text,
+)
 from core.routing.v26.memory_store import MemoryStore
 from core.routing.v26.semantic_retrieval import scored_query
-from core.routing.v26.tools.base import Tool, ToolResult
+from core.routing.v26.tools.base import (
+    Tool,
+    ToolResult,
+    error_result,
+    fail_open,
+    fail_open_validate,
+    safe_memory_dict,
+)
 
 
 class SemanticSearchTool(Tool):
@@ -31,22 +42,40 @@ class SemanticSearchTool(Tool):
             "properties": {
                 "query": {"type": "string", "description": "Search query text."},
                 "limit": {"type": "integer", "description": "Maximum results.", "default": 10},
-                "agent_id": {"type": "string", "description": "Agent scope filter.", "default": "default"},
+                "agent_id": {
+                    "type": "string",
+                    "description": "Agent scope filter.",
+                    "default": "default",
+                },
             },
             "required": ["query"],
         }
 
+    @fail_open_validate
     def validate(self, **kwargs) -> list[str]:
-        errors = super().validate(**kwargs)
-        query = kwargs.get("query", "")
-        if not query:
+        errors: list[str] = []
+        raw = kwargs.get("query", "")
+        try:
+            empty = not raw
+        except Exception:  # noqa: BLE001 - hostile query is a validation error
+            empty = True
+        if empty or not coerce_text(raw):
             errors.append("query is required and must not be empty")
         return errors
 
+    @fail_open
     def execute(self, **kwargs) -> ToolResult:
-        query: str = kwargs["query"]
-        limit: int = kwargs.get("limit", 10)
-        agent_id: str = kwargs.get("agent_id", "default")
+        raw_query = kwargs.get("query", "")
+        try:
+            query_empty = not raw_query
+        except Exception:  # noqa: BLE001
+            query_empty = True
+        query = coerce_text(raw_query)
+        if query_empty or not query:
+            return error_result(self.name, "query is required and must not be empty")
+
+        limit = max(0, coerce_int(kwargs.get("limit", 10), 10))
+        agent_id = coerce_text(kwargs.get("agent_id", "default"), "default") or "default"
 
         agent = AgentIdentity.create(agent_id=agent_id)
         scope = _make_scope(agent)
@@ -58,7 +87,7 @@ class SemanticSearchTool(Tool):
         return ToolResult(
             success=True,
             data={
-                "memories": [e.to_dict() for e in results],
+                "memories": [safe_memory_dict(e) for e in results],
                 "count": len(results),
                 "query": query,
             },

@@ -382,18 +382,16 @@ class ScopeIsolatedStorage:
             if scope is not None:
                 if entry.scope.agent.agent_id != scope.agent.agent_id:
                     continue
-                if scope.project and scope.project.project_id:
-                    if (
-                        entry.scope.project is None
-                        or entry.scope.project.project_id != scope.project.project_id
-                    ):
-                        continue
-                if scope.session and scope.session.session_id:
-                    if (
-                        entry.scope.session is None
-                        or entry.scope.session.session_id != scope.session.session_id
-                    ):
-                        continue
+                if scope.project and scope.project.project_id and (
+                    entry.scope.project is None
+                    or entry.scope.project.project_id != scope.project.project_id
+                ):
+                    continue
+                if scope.session and scope.session.session_id and (
+                    entry.scope.session is None
+                    or entry.scope.session.session_id != scope.session.session_id
+                ):
+                    continue
 
             results.append(entry.memory_id)
 
@@ -420,12 +418,11 @@ class ScopeIsolatedStorage:
         if scope is not None:
             if entry.scope.agent.agent_id != scope.agent.agent_id:
                 return None
-            if scope.project and scope.project.project_id:
-                if (
-                    entry.scope.project is None
-                    or entry.scope.project.project_id != scope.project.project_id
-                ):
-                    return None
+            if scope.project and scope.project.project_id and (
+                entry.scope.project is None
+                or entry.scope.project.project_id != scope.project.project_id
+            ):
+                return None
 
         return entry
 
@@ -461,18 +458,16 @@ class ScopeIsolatedStorage:
             for mid, entry in latest.items():
                 if entry.scope.agent.agent_id != scope.agent.agent_id:
                     continue
-                if scope.project and scope.project.project_id:
-                    if (
-                        entry.scope.project is None
-                        or entry.scope.project.project_id != scope.project.project_id
-                    ):
-                        continue
-                if scope.session and scope.session.session_id:
-                    if (
-                        entry.scope.session is None
-                        or entry.scope.session.session_id != scope.session.session_id
-                    ):
-                        continue
+                if scope.project and scope.project.project_id and (
+                    entry.scope.project is None
+                    or entry.scope.project.project_id != scope.project.project_id
+                ):
+                    continue
+                if scope.session and scope.session.session_id and (
+                    entry.scope.session is None
+                    or entry.scope.session.session_id != scope.session.session_id
+                ):
+                    continue
                 to_remove.append(mid)
 
             for mid in to_remove:

@@ -63,7 +63,9 @@ class GitHubClient(ABC):
         ...
 
     @abstractmethod
-    async def list_files(self, owner: str, name: str, path: str = "", ref: str = "main") -> list[str]:
+    async def list_files(
+        self, owner: str, name: str, path: str = "", ref: str = "main"
+    ) -> list[str]:
         """List file paths under a directory in a repository.
 
         Args:

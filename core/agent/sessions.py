@@ -9,7 +9,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from core.agent.observer import safe_str
+
 SESSION_FILE = "sessions.json"
+ACTIONS = frozenset({"create", "resume", "summarize", "export", "list"})
 
 
 @dataclass
@@ -31,8 +34,8 @@ def _session_path(worktree: str) -> Path:
 def _load(worktree: str) -> list[dict[str, Any]]:
     try:
         data = json.loads(_session_path(worktree).read_text(encoding="utf-8"))
-        return data if isinstance(data, list) else []
-    except (OSError, ValueError, TypeError):
+        return [s for s in data if isinstance(s, dict)] if isinstance(data, list) else []
+    except Exception:
         return []
 
 
@@ -44,20 +47,14 @@ def _save(worktree: str, sessions: list[dict[str, Any]]) -> None:
     os.replace(tmp, path)
 
 
-def session(
-    worktree: str,
-    action: str,
-    session_id: str = "",
-    focus: str = "",
-) -> SessionResult:
-    """Manage sessions: create / resume / summarize / export / list."""
-    if os.environ.get("SCHOOL_SESSION", "") == "0":
-        return SessionResult(ok=True, action=action)
+def _count_notes(entry: dict[str, Any]) -> int:
+    try:
+        return len(entry.get("notes", []))
+    except Exception:
+        return 0
 
-    valid = {"create", "resume", "summarize", "export", "list"}
-    if action not in valid:
-        return SessionResult(ok=False, action=action, error=f"unknown action: {action}")
 
+def _apply(worktree: str, action: str, session_id: str, focus: str) -> SessionResult:
     sessions = _load(worktree)
 
     if action == "create":
@@ -78,11 +75,12 @@ def session(
 
     if action == "resume":
         for s in sessions:
-            if s.get("id") == session_id:
+            if safe_str(s.get("id", "")) == session_id:
                 s["state"] = "active"
                 _save(worktree, sessions)
                 return SessionResult(
-                    ok=True, action=action, session_id=session_id, focus=s.get("focus", "")
+                    ok=True, action=action, session_id=session_id,
+                    focus=safe_str(s.get("focus", "")),
                 )
         return SessionResult(
             ok=False, action=action, session_id=session_id,
@@ -91,9 +89,11 @@ def session(
 
     if action == "summarize":
         for s in sessions:
-            if s.get("id") == session_id:
-                notes = s.get("notes", [])
-                summary = f"Session {session_id}: focus={s.get('focus', '')}, {len(notes)} notes"
+            if safe_str(s.get("id", "")) == session_id:
+                n = _count_notes(s)
+                summary = (
+                    f"Session {session_id}: focus={safe_str(s.get('focus', ''))}, {n} notes"
+                )
                 return SessionResult(
                     ok=True, action=action, session_id=session_id, summary=summary,
                 )
@@ -104,7 +104,7 @@ def session(
 
     if action == "export":
         for s in sessions:
-            if s.get("id") == session_id:
+            if safe_str(s.get("id", "")) == session_id:
                 return SessionResult(
                     ok=True,
                     action=action,
@@ -117,6 +117,33 @@ def session(
         )
 
     return SessionResult(ok=False, action=action, error="unreachable")
+
+
+def session(
+    worktree: str,
+    action: str,
+    session_id: str = "",
+    focus: str = "",
+) -> SessionResult:
+    """Manage sessions: create / resume / summarize / export / list."""
+    action_s = safe_str(action)
+    session_id_s = safe_str(session_id)
+    focus_s = safe_str(focus)
+    if os.environ.get("SCHOOL_SESSION", "") == "0":
+        return SessionResult(ok=True, action=action_s)
+
+    if action_s not in ACTIONS:
+        return SessionResult(ok=False, action=action_s, error=f"unknown action: {action_s}")
+
+    try:
+        return _apply(worktree, action_s, session_id_s, focus_s)
+    except Exception as exc:
+        return SessionResult(
+            ok=False,
+            action=action_s,
+            session_id=session_id_s,
+            error=safe_str(exc, 300) or type(exc).__name__,
+        )
 
 
 __all__ = ["SessionResult", "session"]

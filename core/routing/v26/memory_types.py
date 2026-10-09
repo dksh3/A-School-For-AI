@@ -115,7 +115,7 @@ class MemoryEntry:
             "scope": self.scope.to_dict(),
             "timestamp": self.timestamp,
             "source": self.source,
-            "tags": sorted(self.tags),
+            "tags": sorted(self.tags, key=str),
             "confidence": self.confidence,
             "metadata": dict(self.metadata),
             "parent_id": self.parent_id,

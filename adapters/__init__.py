@@ -5,7 +5,7 @@ harness adapters that connect the learning engine to various
 AI coding assistants.
 """
 
-from adapters.base import HarnessAdapter, AdapterConfig, AdapterCapability
+from adapters.base import AdapterCapability, AdapterConfig, HarnessAdapter
 
 __all__ = [
     "HarnessAdapter",

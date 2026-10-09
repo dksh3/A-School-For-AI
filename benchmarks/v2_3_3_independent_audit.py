@@ -14,10 +14,9 @@ The goal is to determine whether the reported metrics are genuinely valid.
 
 from __future__ import annotations
 
-import sys
 import math
 import random
-from dataclasses import dataclass, field
+import sys
 from pathlib import Path
 
 _project_root = Path(__file__).resolve().parent.parent
@@ -34,7 +33,6 @@ from core.learner.conflict import ConflictConfig
 from core.learner.learner_v2 import HybridSimilarityLearner
 from core.learner.retrieval_scorer import ScorerConfig
 
-
 # ======================================================================
 # INDEPENDENT METRIC IMPLEMENTATIONS (NOT using production code)
 # ======================================================================
@@ -44,7 +42,10 @@ def independent_brier(confidences: list[float], correct: list[bool]) -> float:
     n = len(confidences)
     if n == 0:
         return 0.0
-    return sum((c - (1.0 if cor else 0.0)) ** 2 for c, cor in zip(confidences, correct)) / n
+    return sum(
+        (c - (1.0 if cor else 0.0)) ** 2
+        for c, cor in zip(confidences, correct, strict=False)
+    ) / n
 
 
 def independent_ece(confidences: list[float], correct: list[bool], n_bins: int = 10) -> float:
@@ -54,7 +55,7 @@ def independent_ece(confidences: list[float], correct: list[bool], n_bins: int =
         return 0.0
 
     bins: list[list[tuple[float, bool]]] = [[] for _ in range(n_bins)]
-    for c, cor in zip(confidences, correct):
+    for c, cor in zip(confidences, correct, strict=False):
         bin_idx = min(int(c * n_bins), n_bins - 1)
         bins[bin_idx].append((c, cor))
 
@@ -75,7 +76,7 @@ def independent_reliability(confidences: list[float], correct: list[bool], n_bin
         return [], [], []
 
     bins: list[list[tuple[float, bool]]] = [[] for _ in range(n_bins)]
-    for c, cor in zip(confidences, correct):
+    for c, cor in zip(confidences, correct, strict=False):
         bin_idx = min(int(c * n_bins), n_bins - 1)
         bins[bin_idx].append((c, cor))
 
@@ -247,7 +248,7 @@ def _verify_metrics():
     cases = [
         CalibrationCase(query=f"q{i}", expected="e", predicted="p",
                         confidence=c, correct=cor)
-        for i, (c, cor) in enumerate(zip(confidences, correct))
+        for i, (c, cor) in enumerate(zip(confidences, correct, strict=False))
     ]
     prod_brier = brier_score(cases)
     prod_ece = expected_calibration_error(cases, n_bins=5)
@@ -258,7 +259,8 @@ def _verify_metrics():
     brier_match = abs(ind_brier - prod_brier) < 1e-10
     ece_match = abs(ind_ece - prod_ece) < 1e-10
 
-    print(f"\n  Brier match: {'PASS' if brier_match else 'FAIL'} (diff={abs(ind_brier - prod_brier):.2e})")
+    print(f"\n  Brier match: {'PASS' if brier_match else 'FAIL'} "
+          f"(diff={abs(ind_brier - prod_brier):.2e})")
     print(f"  ECE match:   {'PASS' if ece_match else 'FAIL'} (diff={abs(ind_ece - prod_ece):.2e})")
 
     return brier_match, ece_match
@@ -286,7 +288,7 @@ def _investigate_brier():
 
     train, feedback = [], []
     test = []
-    for cat, (output, queries) in categories.items():
+    for _cat, (output, queries) in categories.items():
         train.extend([{"input": q, "output": output} for q in queries])
         for q in queries:
             feedback.extend([(q, output, True)] * 5)
@@ -302,19 +304,21 @@ def _investigate_brier():
     train_inputs = {obs["input"] for obs in train}
     test_inputs = {q for q, _ in test}
     overlap = train_inputs & test_inputs
-    print(f"  Train/test INPUT overlap: {len(overlap)} / {len(test_inputs)} ({100*len(overlap)/len(test_inputs):.0f}%)")
+    print(f"  Train/test INPUT overlap: {len(overlap)} / {len(test_inputs)} "
+          f"({100*len(overlap)/len(test_inputs):.0f}%)")
 
     if overlap:
-        print(f"\n  *** CRITICAL FINDING: {len(overlap)} test queries are EXACT DUPLICATES of training queries ***")
-        print(f"  This means every test query finds a perfect match in memory.")
-        print(f"  Confidence will always be ~1.0, correctness will always be True.")
-        print(f"  Brier = mean((1.0 - 1.0)^2) = 0.000")
-        print(f"\n  This is a BENCHMARK DESIGN FLAW, not a production algorithm bug.")
+        print(f"\n  *** CRITICAL FINDING: {len(overlap)} test queries are "
+              "EXACT DUPLICATES of training queries ***")
+        print("  This means every test query finds a perfect match in memory.")
+        print("  Confidence will always be ~1.0, correctness will always be True.")
+        print("  Brier = mean((1.0 - 1.0)^2) = 0.000")
+        print("\n  This is a BENCHMARK DESIGN FLAW, not a production algorithm bug.")
     else:
-        print(f"\n  No overlap found. Investigating further...")
+        print("\n  No overlap found. Investigating further...")
 
     # Show raw predictions
-    print(f"\n  Raw predictions (first 10):")
+    print("\n  Raw predictions (first 10):")
     print(f"  {'Query':<25} {'Expected':<15} {'Predicted':<15} {'Conf':>8} {'Correct':>8}")
     print(f"  {'-'*75}")
 
@@ -434,7 +438,7 @@ def _run_independent_audit():
     mean_cal = sum(cal_conf) / len(cal_conf)
     abstentions = sum(1 for r in raw_results if r["abstained"])
 
-    print(f"\n  RESULTS:")
+    print("\n  RESULTS:")
     print(f"  {'Metric':<25} {'Raw':>10} {'Calibrated':>10}")
     print(f"  {'-'*47}")
     print(f"  {'Brier':<25} {raw_brier:>10.4f} {cal_brier:>10.4f}")
@@ -446,7 +450,8 @@ def _run_independent_audit():
 
     # Raw prediction table
     print(f"\n  RAW PREDICTION TABLE (all {len(raw_results)} samples):")
-    print(f"  {'#':>3} {'Expected':<35} {'Predicted':<35} {'Raw':>6} {'Cal':>6} {'Cor':>4} {'Abst':>5}")
+    print(f"  {'#':>3} {'Expected':<35} {'Predicted':<35} "
+          f"{'Raw':>6} {'Cal':>6} {'Cor':>4} {'Abst':>5}")
     print(f"  {'-'*100}")
     for i, r in enumerate(raw_results):
         cor = "Y" if r["predicted"] == r["expected"] else "N"
@@ -455,7 +460,7 @@ def _run_independent_audit():
               f"{r['raw_confidence']:>6.3f} {r['cal_confidence']:>6.3f} {cor:>4} {abst:>5}")
 
     # Confidence distribution
-    print(f"\n  CONFIDENCE DISTRIBUTION:")
+    print("\n  CONFIDENCE DISTRIBUTION:")
     print(f"  Min:    {min(raw_conf):.4f}")
     print(f"  Max:    {max(raw_conf):.4f}")
     print(f"  Mean:   {sum(raw_conf)/len(raw_conf):.4f}")
@@ -464,14 +469,15 @@ def _run_independent_audit():
     print(f"  Median: {median:.4f}")
 
     # Confidence for correct vs incorrect
-    correct_confs = [c for c, cor in zip(raw_conf, correct) if cor]
-    incorrect_confs = [c for c, cor in zip(raw_conf, correct) if not cor]
-    print(f"\n  Correct predictions:   {len(correct_confs)} (mean conf={sum(correct_confs)/max(1,len(correct_confs)):.4f})")
+    correct_confs = [c for c, cor in zip(raw_conf, correct, strict=False) if cor]
+    incorrect_confs = [c for c, cor in zip(raw_conf, correct, strict=False) if not cor]
+    print(f"\n  Correct predictions:   {len(correct_confs)} "
+          f"(mean conf={sum(correct_confs)/max(1,len(correct_confs)):.4f})")
     print(f"  Incorrect predictions: {len(incorrect_confs)}")
     if incorrect_confs:
         print(f"    Confidence of incorrect: {[f'{c:.4f}' for c in incorrect_confs]}")
     else:
-        print(f"    No incorrect predictions!")
+        print("    No incorrect predictions!")
 
     return raw_results, raw_brier, cal_brier
 
@@ -491,7 +497,8 @@ def _abstention_audit():
     feedback = _build_feedback()
     test_data = _build_held_out_test()
 
-    print(f"\n  {'Threshold':>10} {'Coverage':>10} {'Accuracy':>10} {'AbstRate':>10} {'Brier':>10} {'IncorrNonAbst':>15}")
+    print(f"\n  {'Threshold':>10} {'Coverage':>10} {'Accuracy':>10} "
+          f"{'AbstRate':>10} {'Brier':>10} {'IncorrNonAbst':>15}")
     print(f"  {'-'*70}")
 
     for threshold in thresholds:
@@ -516,7 +523,8 @@ def _abstention_audit():
         brier = independent_brier(confidences, correct)
 
         # Incorrect among non-abstained
-        non_abst_correct = [c for c, a in zip(correct, [r["abstained"] for r in [{"abstained": False}] * n]) if not a]
+        [c for c, a in zip(correct, [r["abstained"] for r in [{"abstained": False}] * n],
+                           strict=False) if not a]
         incorr_non_abst = n - abstentions - sum(correct)
 
         print(f"  {threshold:>10.1f} {coverage:>10.4f} {accuracy:>10.4f} "
@@ -547,29 +555,33 @@ def _independence_test():
     for name, n_dupes in scenarios:
         learner = _make_learner()
         for _ in range(n_dupes):
-            learner.learn(LearningInput(observation={"input": "sort a list", "output": "sorted(x)"}))
+            learner.learn(LearningInput(
+                observation={"input": "sort a list", "output": "sorted(x)"}))
         for _ in range(5):
             learner.feedback("sort a list", "sorted(x)", correct=True)
 
         r = learner.predict("sort a list")
-        indep = r.confidence_components.get("independent_evidence_count", 0) if r.confidence_result else 0
+        indep = (r.confidence_components.get("independent_evidence_count", 0)
+                 if r.confidence_result else 0)
         print(f"  {name:<20} {r.confidence:>12.4f} {indep:>15d}")
 
     # Now test genuine independent evidence
-    print(f"\n  Genuine independent memories:")
+    print("\n  Genuine independent memories:")
     print(f"  {'Scenario':<20} {'Confidence':>12} {'Indep.Evidence':>15}")
     print(f"  {'-'*50}")
 
     for n_ind in [1, 3, 5, 10]:
         learner = _make_learner()
         for i in range(n_ind):
-            learner.learn(LearningInput(observation={"input": f"sort task {i}", "output": "sorted(x)"}))
+            learner.learn(LearningInput(
+                observation={"input": f"sort task {i}", "output": "sorted(x)"}))
         for i in range(n_ind):
             learner.feedback(f"sort task {i}", "sorted(x)", correct=True)
 
         # Query one of them
         r = learner.predict("sort task 0")
-        indep = r.confidence_components.get("independent_evidence_count", 0) if r.confidence_result else 0
+        indep = (r.confidence_components.get("independent_evidence_count", 0)
+                 if r.confidence_result else 0)
         print(f"  {n_ind} independent{'':<14} {r.confidence:>12.4f} {indep:>15d}")
 
 
@@ -626,22 +638,22 @@ def _calibration_leakage_test():
     brier_b = independent_brier(test_conf_b, test_cor_raw)
     ece_b = independent_ece(test_conf_b, test_cor_raw, n_bins=5)
 
-    print(f"\n  Experiment A (calibration on INDEPENDENT data):")
+    print("\n  Experiment A (calibration on INDEPENDENT data):")
     print(f"    Brier: {brier_a:.6f}")
     print(f"    ECE:   {ece_a:.6f}")
 
-    print(f"\n  Experiment B (calibration on EVALUATION data = LEAKAGE):")
+    print("\n  Experiment B (calibration on EVALUATION data = LEAKAGE):")
     print(f"    Brier: {brier_b:.6f}")
     print(f"    ECE:   {ece_b:.6f}")
 
-    print(f"\n  Difference:")
+    print("\n  Difference:")
     print(f"    Brier: {abs(brier_a - brier_b):.6f}")
     print(f"    ECE:   {abs(ece_a - ece_b):.6f}")
 
     if abs(ece_a - ece_b) > 0.05:
-        print(f"\n  *** SIGNIFICANT LEAKAGE DETECTED: ECE difference > 0.05 ***")
+        print("\n  *** SIGNIFICANT LEAKAGE DETECTED: ECE difference > 0.05 ***")
     else:
-        print(f"\n  Leakage difference is small (< 0.05).")
+        print("\n  Leakage difference is small (< 0.05).")
 
 
 # ======================================================================
@@ -695,9 +707,9 @@ def _randomization_test():
     print(f"  ECE range:   {min(eces):.4f} - {max(eces):.4f} (std={stdev(eces):.4f})")
 
     if max(briers) - min(briers) > 0.1:
-        print(f"\n  *** UNSTABLE: Brier varies by > 0.1 across seeds ***")
+        print("\n  *** UNSTABLE: Brier varies by > 0.1 across seeds ***")
     else:
-        print(f"\n  Results are stable across seeds.")
+        print("\n  Results are stable across seeds.")
 
 
 def stdev(values):
@@ -744,7 +756,8 @@ def main():
     print("\n" + "=" * 70)
     print("AUDIT SUMMARY")
     print("=" * 70)
-    print(f"\n  Metrics match production: Brier={'YES' if brier_match else 'NO'}, ECE={'YES' if ece_match else 'NO'}")
+    print(f"\n  Metrics match production: Brier={'YES' if brier_match else 'NO'}, "
+          f"ECE={'YES' if ece_match else 'NO'}")
     print(f"  Existing benchmark Brier (Dataset A): {existing_brier:.6f}")
     print(f"  Independent audit Brier (raw):        {ind_brier:.6f}")
     print(f"  Independent audit Brier (calibrated): {ind_cal_brier:.6f}")

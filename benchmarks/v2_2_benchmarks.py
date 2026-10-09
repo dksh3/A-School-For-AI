@@ -20,10 +20,9 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from core.learner.base import LearningInput  # noqa: E402
-from core.learner.conflict import ConflictConfig, ConflictState  # noqa: E402
+from core.learner.conflict import ConflictConfig  # noqa: E402
 from core.learner.learner_v2 import HybridSimilarityLearner  # noqa: E402
 from core.learner.retrieval_scorer import ScorerConfig  # noqa: E402
-
 
 # ---------------------------------------------------------------------------
 # Result tracking
@@ -80,7 +79,9 @@ def train(learner: HybridSimilarityLearner, pairs: list[tuple[str, str]]) -> Non
         learner.learn(LearningInput(observation={"input": text, "output": output}))
 
 
-def measure_accuracy(learner: HybridSimilarityLearner, pairs: list[tuple[str, str]]) -> dict[str, Any]:
+def measure_accuracy(
+    learner: HybridSimilarityLearner, pairs: list[tuple[str, str]],
+) -> dict[str, Any]:
     correct = 0
     latencies: list[float] = []
     for text, expected in pairs:
@@ -236,7 +237,7 @@ def run_benchmarks() -> BenchmarkSuite:
     )
     train(v22_context, CONTEXT_DEPENDENT)
     false_conflicts = 0
-    for query, expected in CONTEXT_QUERIES:
+    for query, _expected in CONTEXT_QUERIES:
         result = v22_context.predict(query)
         if result.has_conflict:
             false_conflicts += 1

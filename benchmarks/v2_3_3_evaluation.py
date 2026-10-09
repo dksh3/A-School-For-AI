@@ -10,8 +10,6 @@ No benchmark leakage. No metric manipulation.
 from __future__ import annotations
 
 import sys
-import time
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -21,24 +19,20 @@ if str(_project_root) not in sys.path:
 
 from core.learner.base import LearningInput
 from core.learner.calibration.calibrator import (
-    CalibrationMap,
     build_calibration_map,
     calibrate,
 )
-from core.learner.calibration.estimator import estimate_confidence_v232
 from core.learner.calibration.metrics import (
     CalibrationCase,
     brier_score,
     expected_calibration_error,
-    compute_full_report,
-    selective_prediction_coverage,
     selective_prediction_accuracy,
+    selective_prediction_coverage,
 )
 from core.learner.confidence import ConfidenceConfig
 from core.learner.conflict import ConflictConfig
 from core.learner.learner_v2 import HybridSimilarityLearner
 from core.learner.retrieval_scorer import ScorerConfig
-
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -94,27 +88,34 @@ def _build_dataset_a():
     IMPORTANT: Test queries are paraphrased, NOT exact duplicates of training.
     """
     categories = {
-        "sort": ("sorted(x)", ["sort a list", "sort array", "sort items", "sort elements", "sort numbers"]),
-        "reverse": ("s[::-1]", ["reverse a string", "flip string", "backwards text", "invert string"]),
+        "sort": ("sorted(x)", ["sort a list", "sort array", "sort items", "sort elements",
+                              "sort numbers"]),
+        "reverse": ("s[::-1]", ["reverse a string", "flip string", "backwards text",
+                                "invert string"]),
         "max": ("max(x)", ["find maximum", "find max", "largest value", "highest number"]),
         "min": ("min(x)", ["find minimum", "find min", "smallest value", "lowest number"]),
         "len": ("len(x)", ["count elements", "count items", "how many items", "get length"]),
         "join": ("''.join(x)", ["join strings", "concatenate", "merge strings", "string join"]),
-        "split": ("x.split(s)", ["split string", "split by delimiter", "tokenize", "divide string"]),
-        "filter": ("[i for i in x if c]", ["filter list", "filter elements", "select items", "keep matching"]),
-        "map": ("[f(i) for i in x]", ["map function", "apply function", "transform each", "mapping"]),
+        "split": ("x.split(s)", ["split string", "split by delimiter", "tokenize",
+                                 "divide string"]),
+        "filter": ("[i for i in x if c]", ["filter list", "filter elements", "select items",
+                                           "keep matching"]),
+        "map": ("[f(i) for i in x]", ["map function", "apply function", "transform each",
+                                      "mapping"]),
         "file": ("open(f).read()", ["read file", "load file", "file contents", "read text file"]),
     }
 
     # Test queries are PARAPHRASED — never identical to training
     test_paraphrases = {
-        "sort": ("sorted(x)", ["arrange numbers in order", "order the items", "organize the collection",
-                                "put elements in sorted order", "sort the data ascending"]),
+        "sort": ("sorted(x)", ["arrange numbers in order", "order the items",
+                                "organize the collection", "put elements in sorted order",
+                                "sort the data ascending"]),
         "reverse": ("s[::-1]", ["flip the text", "invert the string", "make string backwards",
                                  "reverse character order", "mirror the text"]),
         "max": ("max(x)", ["get the largest", "determine peak value", "find the biggest element",
                             "what is the maximum", "identify the highest"]),
-        "min": ("min(x)", ["get the smallest", "determine lowest value", "find the smallest element",
+        "min": ("min(x)", ["get the smallest", "determine lowest value",
+                            "find the smallest element",
                             "what is the minimum", "identify the lowest"]),
         "len": ("len(x)", ["how many items are there", "what is the size", "count the objects",
                             "determine the length", "get element count"]),
@@ -123,19 +124,21 @@ def _build_dataset_a():
         "split": ("x.split(s)", ["break apart text", "tokenize the string", "separate by delimiter",
                                   "cut text into pieces", "divide by separator"]),
         "filter": ("[i for i in x if c]", ["select matching items", "keep only valid entries",
-                                             "filter out non-matching", "extract subset", "conditional selection"]),
+                                             "filter out non-matching", "extract subset",
+                                             "conditional selection"]),
         "map": ("[f(i) for i in x]", ["transform each element", "apply function to all",
-                                        "run function on everything", "map over collection", "apply to each"]),
+                                        "run function on everything", "map over collection",
+                                        "apply to each"]),
         "file": ("open(f).read()", ["load file data", "grab file contents", "read the file",
                                      "open and read text", "load text from file"]),
     }
 
     train, feedback, test = [], [], []
-    for cat, (output, queries) in categories.items():
+    for _cat, (output, queries) in categories.items():
         train.extend([{"input": q, "output": output} for q in queries])
         for q in queries:
             feedback.extend([(q, output, True)] * 5)
-    for cat, (output, queries) in test_paraphrases.items():
+    for _cat, (output, queries) in test_paraphrases.items():
         test.extend([(q, output) for q in queries])
     return train, feedback, test
 
@@ -144,7 +147,8 @@ def _build_dataset_b():
     """Easy: strong evidence, high agreement."""
     train, feedback, test = [], [], []
     sort_queries = ["sort a list", "sort list", "sort array", "sort items", "sort elements",
-                    "sort numbers", "sort the data", "sort collection", "order list", "arrange elements"]
+                    "sort numbers", "sort the data", "sort collection", "order list",
+                    "arrange elements"]
     for q in sort_queries:
         train.append({"input": q, "output": "sorted(x)"})
     for _ in range(20):

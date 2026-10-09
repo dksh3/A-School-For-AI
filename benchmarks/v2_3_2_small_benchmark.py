@@ -14,16 +14,15 @@ if str(_project_root) not in sys.path:
     sys.path.insert(0, str(_project_root))
 
 from core.learner.base import LearningInput
-from core.learner.calibration.metrics import (
-    CalibrationCase,
-    compute_full_report,
-)
 from core.learner.calibration.calibrator import (
-    CalibrationMap,
     build_calibration_map,
     calibrate,
 )
 from core.learner.calibration.estimator import estimate_confidence_v232
+from core.learner.calibration.metrics import (
+    CalibrationCase,
+    compute_full_report,
+)
 from core.learner.confidence import ConfidenceConfig
 from core.learner.conflict import ConflictConfig
 from core.learner.learner_v2 import HybridSimilarityLearner
@@ -128,7 +127,8 @@ def run_small_benchmark():
             supporting_count=r.confidence_components.get("supporting_count", 0),
             total_count=r.confidence_components.get("total_count", 0),
             outputs=[s[0] for s in r.prediction.similarities] if r.prediction.similarities else [],
-            output_similarities=[s for _, s in r.prediction.similarities] if r.prediction.similarities else [],
+            output_similarities=([s for _, s in r.prediction.similarities]
+                                 if r.prediction.similarities else []),
         )
         raw_confs.append(v232_result.confidence)
         v232_cases.append(CalibrationCase(
@@ -168,10 +168,12 @@ def run_small_benchmark():
 
     # --- Summary ---
     print(f"\n{'='*60}")
-    print(f"  SUMMARY (small dataset, V2.3.1 conditions)")
+    print("  SUMMARY (small dataset, V2.3.1 conditions)")
     print(f"{'='*60}")
-    for label, r in [("V2.3", v23_report), ("V2.3.2", v232_report), ("V2.3.2+cal", v232_cal_report)]:
-        print(f"  {label:15s}: Brier={r.brier:.4f} ECE={r.ece:.4f} mean_conf={r.mean_confidence:.4f}")
+    for label, r in [("V2.3", v23_report), ("V2.3.2", v232_report),
+                     ("V2.3.2+cal", v232_cal_report)]:
+        print(f"  {label:15s}: Brier={r.brier:.4f} ECE={r.ece:.4f} "
+              f"mean_conf={r.mean_confidence:.4f}")
 
 
 if __name__ == "__main__":

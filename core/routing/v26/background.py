@@ -1,6 +1,8 @@
 """Background worker for continuous learning tasks."""
 from __future__ import annotations
+
 from typing import TYPE_CHECKING
+
 from core.routing.v26.tools.base import ToolResult
 
 if TYPE_CHECKING:

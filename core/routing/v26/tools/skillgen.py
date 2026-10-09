@@ -2,24 +2,81 @@
 
 Thin adapters over core.skillgen: each tool reads its worktree, builds a
 SkillPipeline on the scoped registry, and returns the pipeline report.
+Fail-open: every execute() coerces hostile arguments safely and catches any
+residual error, so the tools NEVER raise at the boundary.
 """
 
 from __future__ import annotations
 
+import functools
+from typing import Any
+
 from core.routing.v26.tools.base import Tool, ToolResult
 from core.skillgen.pipeline import SkillPipeline
 from core.skillgen.registry import registry_for
+from core.skillgen.types import safe_int, safe_str
+
+
+def _worktree_of(kwargs: dict) -> str:
+    """Worktree for this call: str values pass through, junk falls back."""
+    wt = kwargs.get("worktree")
+    return wt if isinstance(wt, str) and wt else "."
 
 
 def _pipeline(kwargs: dict) -> SkillPipeline:
-    worktree = kwargs.get("worktree") or "."
-    return SkillPipeline(registry_for(worktree))
+    return SkillPipeline(registry_for(_worktree_of(kwargs)))
 
 
-def _result(tool: str, data: dict) -> ToolResult:
+def _result(tool: str, data: Any) -> ToolResult:
+    if not isinstance(data, dict):
+        data = {"ok": False, "reason": "invalid_report", "detail": safe_str(data, 200)}
     ok = bool(data.get("ok", True))
     errors = [] if ok else [str(data.get("reason") or data.get("action") or "failed")]
     return ToolResult(success=ok, data=data, errors=errors, metadata={"tool": tool})
+
+
+def _text_of(value: Any, limit: int = 200) -> str:
+    """Optional text param: None/falsy -> '', hostile values -> safe str."""
+    if value is None:
+        return ""
+    try:
+        truthy = bool(value)
+    except Exception:  # noqa: BLE001 - hostile __bool__
+        return safe_str(value, limit)
+    return safe_str(value, limit) if truthy else ""
+
+
+def _bool_of(value: Any, default: bool = False) -> bool:
+    """Safe truthiness coercion (hostile __bool__ included)."""
+    if isinstance(value, bool):
+        return value
+    try:
+        return bool(value)
+    except Exception:  # noqa: BLE001 - hostile __bool__
+        return default
+
+
+def _fail_result(tool: str, exc: Exception) -> ToolResult:
+    return ToolResult(
+        success=False,
+        data={"ok": False, "reason": f"internal_error:{type(exc).__name__}",
+              "detail": safe_str(exc, 200)},
+        errors=[f"internal error: {type(exc).__name__}"],
+        metadata={"tool": tool},
+    )
+
+
+def _fail_open(fn):  # noqa: ANN001, ANN201 - decorator over Tool.execute
+    """Boundary guard: a tool must return a result, never raise."""
+
+    @functools.wraps(fn)
+    def wrapper(self, **kwargs):  # noqa: ANN001, ANN201
+        try:
+            return fn(self, **kwargs)
+        except Exception as exc:  # noqa: BLE001 - last-resort fail-open
+            return _fail_result(safe_str(getattr(self, "name", "tool"), 100), exc)
+
+    return wrapper
 
 
 _SCOPE_PROPS = {
@@ -80,10 +137,11 @@ class SkillListTool(Tool):
             "required": [],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        state = str(kwargs.get("state") or "")
-        scope = str(kwargs.get("scope") or "")
-        limit = int(kwargs.get("limit") or 50)
+        state = _text_of(kwargs.get("state"), 64)
+        scope = _text_of(kwargs.get("scope"), 64)
+        limit = safe_int(kwargs.get("limit"), 50)
         skills = []
         for s in _pipeline(kwargs).registry.all():
             if state and s.state.value != state:
@@ -149,8 +207,9 @@ class SkillSearchTool(Tool):
             "required": ["query"],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        query = str(kwargs.get("query") or "")
+        query = _text_of(kwargs.get("query"), 20_000)
         if not query:
             return _result(self.name, {"ok": False, "reason": "query required"})
         from core.skillgen.matcher import match
@@ -158,11 +217,11 @@ class SkillSearchTool(Tool):
         hits = match(
             _pipeline(kwargs).registry,
             query,
-            agent_id=str(kwargs.get("agent_id") or "opencode"),
-            project_id=str(kwargs.get("project") or ""),
-            session_id=str(kwargs.get("session") or ""),
-            include_unusable=bool(kwargs.get("include_unusable") or False),
-            limit=int(kwargs.get("limit") or 5),
+            agent_id=_text_of(kwargs.get("agent_id"), 200) or "opencode",
+            project_id=_text_of(kwargs.get("project"), 200),
+            session_id=_text_of(kwargs.get("session"), 200),
+            include_unusable=_bool_of(kwargs.get("include_unusable")),
+            limit=safe_int(kwargs.get("limit"), 5),
         )
         return _result(
             self.name, {"ok": True, "query": query, "matches": hits,
@@ -251,6 +310,7 @@ class SkillCreateTool(Tool):
             "required": ["name", "description", "purpose", "procedure"],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
         payload = {
             k: kwargs.get(k)
@@ -263,9 +323,9 @@ class SkillCreateTool(Tool):
         }
         report = _pipeline(kwargs).create_manual(
             payload,
-            agent_id=str(kwargs.get("agent_id") or "opencode"),
-            project_id=str(kwargs.get("project") or ""),
-            session_id=str(kwargs.get("session") or ""),
+            agent_id=_text_of(kwargs.get("agent_id"), 200) or "opencode",
+            project_id=_text_of(kwargs.get("project"), 200),
+            session_id=_text_of(kwargs.get("session"), 200),
         )
         return _result(self.name, report)
 
@@ -305,17 +365,18 @@ class SkillUseTool(Tool):
             "required": [],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        name = str(kwargs.get("name") or "")
-        query = str(kwargs.get("query") or "")
+        name = _text_of(kwargs.get("name"), 200)
+        query = _text_of(kwargs.get("query"), 20_000)
         if not name and not query:
             return _result(self.name, {"ok": False, "reason": "name or query required"})
         report = _pipeline(kwargs).use(
             name=name,
             query=query,
-            agent_id=str(kwargs.get("agent_id") or "opencode"),
-            project_id=str(kwargs.get("project") or ""),
-            session_id=str(kwargs.get("session") or ""),
+            agent_id=_text_of(kwargs.get("agent_id"), 200) or "opencode",
+            project_id=_text_of(kwargs.get("project"), 200),
+            session_id=_text_of(kwargs.get("session"), 200),
         )
         return _result(self.name, report)
 
@@ -355,8 +416,9 @@ class SkillFeedbackTool(Tool):
             "required": ["name", "success"],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        name = str(kwargs.get("name") or "")
+        name = _text_of(kwargs.get("name"), 200)
         success = kwargs.get("success")
         if not name:
             return _result(self.name, {"ok": False, "reason": "name required"})
@@ -365,8 +427,8 @@ class SkillFeedbackTool(Tool):
         report = _pipeline(kwargs).feedback(
             name,
             success,
-            note=str(kwargs.get("note") or ""),
-            agent_id=str(kwargs.get("agent_id") or "opencode"),
+            note=_text_of(kwargs.get("note"), 500),
+            agent_id=_text_of(kwargs.get("agent_id"), 200) or "opencode",
         )
         return _result(self.name, report)
 
@@ -390,6 +452,7 @@ class SkillStatusTool(Tool):
     def schema(self) -> dict:
         return {"type": "object", "properties": {}, "required": []}
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
         return _result(self.name, _pipeline(kwargs).status())
 
@@ -434,12 +497,14 @@ class SkillEvolveTool(Tool):
             "required": [],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
+        changes = kwargs.get("changes")
         report = _pipeline(kwargs).evolve(
-            action=str(kwargs.get("action") or "consolidate"),
-            name=str(kwargs.get("name") or ""),
-            changes=kwargs.get("changes") or None,
-            agent_id=str(kwargs.get("agent_id") or "opencode"),
+            action=_text_of(kwargs.get("action"), 32) or "consolidate",
+            name=_text_of(kwargs.get("name"), 200),
+            changes=changes if isinstance(changes, dict) else None,
+            agent_id=_text_of(kwargs.get("agent_id"), 200) or "opencode",
         )
         return _result(self.name, report)
 

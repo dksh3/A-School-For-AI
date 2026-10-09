@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -63,7 +61,9 @@ class TestCLIStatus:
         """school status shows bridge tier."""
         from school.discovery import BridgeDiscovery
 
-        mock_bridge = BridgeDiscovery(python="python3", bridge_path="/test/bridge.py", tier="test_tier")
+        mock_bridge = BridgeDiscovery(
+            python="python3", bridge_path="/test/bridge.py", tier="test_tier"
+        )
         with (
             patch("sys.argv", ["school", "status"]),
             patch("school.cli.discover_bridge", return_value=mock_bridge),
@@ -108,7 +108,9 @@ class TestCLIInstall:
 
         assert (plugins_dir / "school.ts").exists()
 
-    def test_install_skip_existing(self, tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    def test_install_skip_existing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         """school install skips if already installed."""
         config_dir = tmp_path / ".config" / "opencode"
         config_dir.mkdir(parents=True)

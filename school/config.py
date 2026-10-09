@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -107,11 +108,18 @@ def resolve_memory_dir(worktree: str | Path) -> Path:
     ``.school/memory`` is created. Existing roots are used in place —
     memory is never copied, moved, or deleted.
     """
-    root = Path(worktree)
-    for name in (".school", ".teacher", ".lerev", ".evo"):
-        candidate = root / name / "memory"
-        if candidate.exists():
-            return candidate
-    canonical = root / ".school" / "memory"
-    canonical.mkdir(parents=True, exist_ok=True)
-    return canonical
+    try:
+        root = Path(worktree)
+    except (TypeError, ValueError):
+        root = Path(tempfile.mkdtemp(prefix="school-mem-"))
+    try:
+        for name in (".school", ".teacher", ".lerev", ".evo"):
+            candidate = root / name / "memory"
+            if candidate.exists():
+                return candidate
+        canonical = root / ".school" / "memory"
+        canonical.mkdir(parents=True, exist_ok=True)
+        return canonical
+    except (OSError, ValueError, TypeError):
+        # Hostile path (NUL bytes, traversal, invalid) -> isolated temp dir.
+        return Path(tempfile.mkdtemp(prefix="school-mem-"))

@@ -13,39 +13,26 @@ from __future__ import annotations
 import random
 import time
 from dataclasses import dataclass, field
-from pathlib import Path
 
 import pytest
 
 from core.learner.hybrid_memory import HybridExample, HybridMemory
 from core.learner.knowledge_ops import (
-    MergeCandidate,
-    RedundancyResult,
-    SupersessionResult,
-    analyze_redundancy,
-    analyze_supersession,
-    archive_memory,
     find_merge_candidates,
-    is_eligible_for_archive,
 )
 from core.learner.lifecycle import (
     HealthSignals,
     LifecycleConfig,
-    LifecycleEvent,
     MemoryState,
     compute_decay,
     compute_health_score,
     compute_reinforcement,
 )
 from core.learner.lifecycle_manager import (
-    EventTriggerConfig,
     LifecycleManager,
     MaintenanceEvent,
-    MaintenanceRecord,
     MemoryLifecycleState,
-    PERSISTENCE_VERSION,
 )
-
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -84,7 +71,7 @@ def _make_memory_pool(
     """Create a pool of diverse memories."""
     rng = random.Random(seed)
     memories = []
-    
+
     topics = [
         "python", "javascript", "rust", "go", "java",
         "database", "api", "testing", "deployment", "security",
@@ -93,7 +80,7 @@ def _make_memory_pool(
         "implement", "fix", "optimize", "refactor", "test",
         "deploy", "configure", "debug", "review", "document",
     ]
-    
+
     for i in range(count):
         topic = rng.choice(topics)
         action = rng.choice(actions)
@@ -106,7 +93,7 @@ def _make_memory_pool(
             created_at=base_time + rng.uniform(0, 1000),
             use_count=rng.randint(0, 20),
         ))
-    
+
     return memories
 
 
@@ -126,7 +113,7 @@ def _make_hybrid_memory(examples: list[HybridExample]) -> HybridMemory:
 @dataclass
 class SimulationMetrics:
     """Metrics from a lifecycle simulation run."""
-    
+
     total_cycles: int = 0
     total_memories_processed: int = 0
     total_transitions: int = 0
@@ -161,19 +148,19 @@ class TestLongRunSimulation:
             ),
             clock=lambda: 1000.0,
         )
-        
+
         metrics = SimulationMetrics()
         start_time = time.time()
-        
-        for cycle in range(100):
+
+        for _cycle in range(100):
             # Simulate reinforcement events
             for mem in memories[:10]:  # Reinforce first 10
                 manager.record_event(MaintenanceEvent.REPEATED_SUCCESS, mem.id)
-            
+
             # Simulate decay
             for mem in memories[20:30]:  # Decay some memories
                 manager.record_event(MaintenanceEvent.NEW_EVIDENCE, mem.id)
-            
+
             # Check if maintenance needed
             if manager.needs_maintenance:
                 record = manager.run_maintenance(
@@ -182,10 +169,10 @@ class TestLongRunSimulation:
                 )
                 metrics.total_maintenance += 1
                 metrics.total_transitions += record.transitions
-        
+
         metrics.performance_ms = (time.time() - start_time) * 1000
         metrics.final_memory_count = len(memories)
-        
+
         # Verify stability
         assert metrics.performance_ms < 10000, f"100 cycles took {metrics.performance_ms:.1f}ms"
         assert len(memories) == 50, "Memory count should remain stable"
@@ -203,22 +190,22 @@ class TestLongRunSimulation:
             ),
             clock=lambda: 1000.0,
         )
-        
+
         metrics = SimulationMetrics()
         start_time = time.time()
-        
+
         for cycle in range(500):
             # Simulate varied events
             if cycle % 10 == 0:
                 # Every 10 cycles, reinforce some memories
                 for mem in memories[:5]:
                     manager.record_event(MaintenanceEvent.REPEATED_SUCCESS, mem.id)
-            
+
             if cycle % 5 == 0:
                 # Every 5 cycles, add new evidence
                 for mem in memories[10:15]:
                     manager.record_event(MaintenanceEvent.NEW_EVIDENCE, mem.id)
-            
+
             # Check maintenance
             if manager.needs_maintenance:
                 record = manager.run_maintenance(
@@ -227,10 +214,10 @@ class TestLongRunSimulation:
                 )
                 metrics.total_maintenance += 1
                 metrics.total_transitions += record.transitions
-        
+
         metrics.performance_ms = (time.time() - start_time) * 1000
         metrics.final_memory_count = len(memories)
-        
+
         # Verify no degradation
         assert metrics.performance_ms < 30000, f"500 cycles took {metrics.performance_ms:.1f}ms"
         assert len(memories) == 100, "Memory count should remain stable"
@@ -244,7 +231,7 @@ class TestLongRunSimulation:
             ),
             clock=lambda: 1000.0,
         )
-        
+
         # Run maintenance 50 times
         for _ in range(50):
             record = manager.run_maintenance(
@@ -252,7 +239,7 @@ class TestLongRunSimulation:
                 force=True,
             )
             assert record.memories_processed == 30
-        
+
         # Verify no state corruption
         for mem in memories:
             state = manager.get_state(mem.id)
@@ -271,14 +258,14 @@ class TestScalabilityBenchmark:
         """Benchmark with 100 memories."""
         memories = _make_memory_pool(100, seed=100)
         manager = LifecycleManager()
-        
+
         start_time = time.time()
         record = manager.run_maintenance(
             memory=_make_hybrid_memory(memories),
             force=True,
         )
         elapsed_ms = (time.time() - start_time) * 1000
-        
+
         # Should complete in < 100ms
         assert elapsed_ms < 100, f"100 memories took {elapsed_ms:.1f}ms"
         assert record.memories_processed == 100
@@ -292,14 +279,14 @@ class TestScalabilityBenchmark:
         """
         memories = _make_memory_pool(1000, seed=1000)
         manager = LifecycleManager()
-        
+
         start_time = time.time()
         record = manager.run_maintenance(
             memory=_make_hybrid_memory(memories),
             force=True,
         )
         elapsed_ms = (time.time() - start_time) * 1000
-        
+
         # Should complete in < 30s (reconstruction overhead)
         assert elapsed_ms < 30000, f"1000 memories took {elapsed_ms:.1f}ms"
         assert record.memories_processed == 1000
@@ -312,14 +299,14 @@ class TestScalabilityBenchmark:
         """
         memories = _make_memory_pool(10000, seed=10000)
         manager = LifecycleManager()
-        
+
         start_time = time.time()
         record = manager.run_maintenance(
             memory=_make_hybrid_memory(memories),
             force=True,
         )
         elapsed_ms = (time.time() - start_time) * 1000
-        
+
         # Should complete in < 5 minutes (stress test)
         assert elapsed_ms < 300000, f"10000 memories took {elapsed_ms:.1f}ms"
         assert record.memories_processed == 10000
@@ -332,21 +319,21 @@ class TestScalabilityBenchmark:
             merge_input_similarity=0.2,
             merge_min_evidence=1,
         )
-        
+
         # Brute force
         start_brute = time.time()
         candidates_brute = find_merge_candidates(
             memories, config, use_index=False
         )
         time_brute = (time.time() - start_brute) * 1000
-        
+
         # Indexed
         start_index = time.time()
-        candidates_index = find_merge_candidates(
+        find_merge_candidates(
             memories, config, use_index=True
         )
         time_index = (time.time() - start_index) * 1000
-        
+
         # Both should find similar candidates
         assert len(candidates_brute) > 0, "Should find some candidates"
         # Indexed should be faster for 500 memories
@@ -368,14 +355,14 @@ class TestLifecycleStability:
     def test_health_score_stability(self) -> None:
         """Test that health scores remain stable under normal conditions."""
         manager = LifecycleManager()
-        
+
         # Create memory with consistent behavior
         mem = _make_memory(
             memory_id=1,
             success_count=5,
             failure_count=1,
         )
-        
+
         # Track health scores over time
         scores = []
         for _ in range(50):
@@ -384,7 +371,7 @@ class TestLifecycleStability:
                 HybridMemory(),
             )
             scores.append(score)
-        
+
         # Scores should be stable (no large jumps)
         for i in range(1, len(scores)):
             diff = abs(scores[i] - scores[i-1])
@@ -393,13 +380,13 @@ class TestLifecycleStability:
     def test_reinforcement_stability(self) -> None:
         """Test that reinforcement is bounded."""
         manager = LifecycleManager()
-        
+
         mem = _make_memory(
             memory_id=1,
             success_count=0,
             failure_count=0,
         )
-        
+
         # Reinforce many times
         for _ in range(100):
             signals = HealthSignals(
@@ -412,7 +399,7 @@ class TestLifecycleStability:
                 contradiction_count=0,
             )
             score = compute_health_score(signals)
-            reinforcement = compute_reinforcement(
+            compute_reinforcement(
                 score,
                 mem.success_count + 1,
                 mem.success_count + 1,
@@ -422,7 +409,7 @@ class TestLifecycleStability:
                 memory_id=1,
                 success_count=mem.success_count + 1,
             )
-        
+
         # Score should not exceed 1.0
         final_signals = HealthSignals(
             success_rate=min(1.0, mem.success_count / 10.0),
@@ -439,7 +426,7 @@ class TestLifecycleStability:
     def test_decay_stability(self) -> None:
         """Test that decay is bounded and doesn't go negative."""
         manager = LifecycleManager()
-        
+
         score = 0.5
         for _ in range(100):
             score = compute_decay(
@@ -449,7 +436,7 @@ class TestLifecycleStability:
                 independent_evidence=1,
                 config=manager.config,
             )
-        
+
         assert score >= 0.0, f"Decay went negative: {score}"
         assert score <= 1.0, f"Decay exceeded 1.0: {score}"
 
@@ -505,9 +492,9 @@ class TestEdgeCases:
     def test_rapid_state_transitions(self) -> None:
         """Test rapid state transitions don't corrupt state."""
         manager = LifecycleManager()
-        
+
         mem = _make_memory(memory_id=1)
-        
+
         # Force rapid state changes via the internal states dict
         for _ in range(20):
             state = manager.get_state(mem.id)
@@ -525,7 +512,7 @@ class TestEdgeCases:
                     health_score=state.health_score,
                     last_health_check=state.last_health_check,
                 )
-        
+
         # Should be in valid state
         state = manager.get_state(mem.id)
         assert state.state in [MemoryState.ACTIVE, MemoryState.UNCERTAIN]

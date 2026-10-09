@@ -18,6 +18,7 @@ Design principles:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 from core.learner.feature_extractor import FeatureExtractor
@@ -27,7 +28,14 @@ from core.routing.v26.experience import (
     is_promotable,
     validate_experience_content,
 )
-from core.routing.v26.identity import AgentIdentity, MemoryScope
+from core.routing.v26.identity import (
+    AgentIdentity,
+    MemoryScope,
+    coerce_float,
+    coerce_int,
+    coerce_tag_set,
+    coerce_text,
+)
 from core.routing.v26.memory_store import MemoryStore
 from core.routing.v26.memory_types import (
     MemoryEntry,
@@ -35,13 +43,21 @@ from core.routing.v26.memory_types import (
     MemoryRequest,
     MemoryResponse,
 )
-from core.routing.v26.persistence import ScopeIsolatedStorage
+from core.routing.v26.persistence import PersistenceError, ScopeIsolatedStorage
 from core.routing.v26.security import (
     V26SecurityPolicy,
     enforce_instruction_boundary,
     validate_memory_content,
     validate_memory_request,
 )
+
+
+def _err(exc: BaseException) -> str:
+    """Format an exception safely (hostile __str__ must not raise)."""
+    detail = coerce_text(exc, "<unprintable>")
+    if len(detail) > 200:
+        detail = detail[:200] + "..."
+    return f"{type(exc).__name__}: {detail}"
 
 
 class MemoryManager:
@@ -93,6 +109,9 @@ class MemoryManager:
         5. Apply context budget
         6. Return bounded response
 
+        Fail-open: any hostile or malformed request yields an empty
+        MemoryResponse (and bumps the error counter), never a raise.
+
         Args:
             request: The memory retrieval request.
 
@@ -100,6 +119,17 @@ class MemoryManager:
             MemoryResponse with matching memories.
         """
         self._operation_count += 1
+        try:
+            return self._request_memory_impl(request)
+        except Exception:  # noqa: BLE001 - fail-open at the manager boundary
+            self._error_count += 1
+            return MemoryResponse()
+
+    def _request_memory_impl(self, request: MemoryRequest) -> MemoryResponse:
+        """Inner read path; hostile fields are coerced or rejected."""
+        if not isinstance(request, MemoryRequest):
+            self._error_count += 1
+            return MemoryResponse()
 
         # Step 1: Validate request
         is_valid, reason = validate_memory_request(request, self._policy)
@@ -113,18 +143,27 @@ class MemoryManager:
                 provenance=(),
             )
 
+        # Sanitize fields (dataclass construction does not type-check)
+        limit = max(0, coerce_int(request.limit, 10))
+        context_budget = max(0, coerce_int(request.context_budget, 4096))
+        minimum_confidence = coerce_float(request.minimum_confidence, 0.0)
+        tags = coerce_tag_set(request.tags)
+        query_text = (
+            request.query if isinstance(request.query, str) else coerce_text(request.query)
+        )
+
         # Step 2: Build scope
         scope = request.to_scope()
 
         # Step 3: Query store
-        kinds = request.kinds if request.kinds else None
+        kinds = tuple(k for k in (request.kinds or ()) if isinstance(k, MemoryKind))
         entries = self._store.query(
             scope=scope,
-            kind=kinds[0] if kinds and len(kinds) == 1 else None,
-            limit=request.limit + 100,  # Extra for budget filtering
-            minimum_confidence=request.minimum_confidence,
-            tags=request.tags if request.tags else None,
-            query_text=request.query,
+            kind=kinds[0] if len(kinds) == 1 else None,
+            limit=limit + 100,  # Extra for budget filtering
+            minimum_confidence=minimum_confidence,
+            tags=tags if tags else None,
+            query_text=query_text,
             extractor=self._extractor,
         )
 
@@ -141,11 +180,15 @@ class MemoryManager:
         truncated = False
 
         for entry in safe_entries:
-            entry_tokens = entry.estimated_tokens
-            if total_tokens + entry_tokens > request.context_budget:
+            try:
+                entry_tokens = entry.estimated_tokens
+            except Exception:  # noqa: BLE001 - unreadable entries are skipped
+                self._error_count += 1
+                continue
+            if total_tokens + entry_tokens > context_budget:
                 truncated = True
                 break
-            if len(selected) >= request.limit:
+            if len(selected) >= limit:
                 truncated = True
                 break
             selected.append(entry)
@@ -183,27 +226,52 @@ class MemoryManager:
         """
         self._operation_count += 1
 
-        # Validate content
-        is_valid, reason = validate_memory_content(entry, self._policy)
+        if not isinstance(entry, MemoryEntry):
+            self._error_count += 1
+            return False, "invalid memory entry"
+
+        # Reject entries that would poison in-memory queries (non-numeric
+        # confidence breaks ordering/ranking in the shared store).
+        if not isinstance(entry.confidence, (int, float)):
+            self._error_count += 1
+            return False, "invalid memory entry: confidence must be numeric"
+
+        # Validate content (hostile entries -> graceful rejection)
+        try:
+            is_valid, reason = validate_memory_content(entry, self._policy)
+        except Exception:  # noqa: BLE001
+            self._error_count += 1
+            return False, "invalid memory entry"
         if not is_valid:
             self._error_count += 1
             return False, reason
 
         # Validate agent ownership
         if agent is not None:
-            if entry.scope.agent.agent_id != agent.agent_id:
+            try:
+                if not isinstance(agent, AgentIdentity) or (
+                    entry.scope.agent.agent_id != agent.agent_id
+                ):
+                    self._error_count += 1
+                    return False, "agent ownership mismatch"
+            except Exception:  # noqa: BLE001
                 self._error_count += 1
                 return False, "agent ownership mismatch"
 
         # Store in memory
-        self._store.store(entry)
+        try:
+            self._store.store(entry)
+        except Exception as e:  # noqa: BLE001
+            self._error_count += 1
+            return False, f"storage error: {_err(e)}"
 
         # Persist if storage backend available
         if self._storage is not None:
             try:
                 self._storage.store(entry)
             except Exception as e:
-                return False, f"persistence error: {e}"
+                self._error_count += 1
+                return False, f"persistence error: {_err(e)}"
 
         return True, ""
 
@@ -220,36 +288,49 @@ class MemoryManager:
         """
         self._operation_count += 1
 
-        # Validate experience
-        is_valid, reason = experience.validate()
-        if not is_valid:
+        if not isinstance(experience, Experience):
             self._error_count += 1
-            return False, reason
+            return False, "invalid experience"
 
-        # Validate content
-        is_valid, reason = validate_experience_content(experience)
-        if not is_valid:
+        try:
+            # Validate experience
+            is_valid, reason = experience.validate()
+            if not is_valid:
+                self._error_count += 1
+                return False, reason
+
+            # Validate content
+            is_valid, reason = validate_experience_content(experience)
+            if not is_valid:
+                self._error_count += 1
+                return False, reason
+
+            # Convert to memory entry
+            entry = experience.to_memory_entry()
+
+            # Validate content
+            is_valid, reason = validate_memory_content(entry, self._policy)
+            if not is_valid:
+                self._error_count += 1
+                return False, reason
+        except Exception as e:  # noqa: BLE001 - hostile experiences degrade to rejection
             self._error_count += 1
-            return False, reason
-
-        # Convert to memory entry
-        entry = experience.to_memory_entry()
-
-        # Validate content
-        is_valid, reason = validate_memory_content(entry, self._policy)
-        if not is_valid:
-            self._error_count += 1
-            return False, reason
+            return False, f"invalid experience: {_err(e)}"
 
         # Store
-        self._store.store(entry)
+        try:
+            self._store.store(entry)
+        except Exception as e:  # noqa: BLE001
+            self._error_count += 1
+            return False, f"storage error: {_err(e)}"
 
         # Persist if storage backend available
         if self._storage is not None:
             try:
                 self._storage.store(entry)
             except Exception as e:
-                return False, f"persistence error: {e}"
+                self._error_count += 1
+                return False, f"persistence error: {_err(e)}"
 
         return True, ""
 
@@ -272,7 +353,10 @@ class MemoryManager:
         Returns:
             Tuple of (promotable, reason).
         """
-        return is_promotable(experience)
+        try:
+            return is_promotable(experience)
+        except Exception as e:  # noqa: BLE001 - hostile experiences are not promotable
+            return False, f"experience cannot be evaluated: {_err(e)}"
 
     def promote_experience(
         self,
@@ -290,36 +374,43 @@ class MemoryManager:
         """
         self._operation_count += 1
 
-        is_promotable_result, reason = is_promotable(experience)
-        if not is_promotable_result:
-            return False, reason, None
+        if not isinstance(experience, Experience):
+            return False, "invalid experience", None
 
-        # Create learned memory entry
-        entry = MemoryEntry(
-            memory_id=experience.experience_id,
-            content=experience.observation or experience.action,
-            kind=MemoryKind.LEARNED,
-            scope=experience.to_scope(),
-            timestamp=experience.timestamp,
-            source=experience.source,
-            tags=experience.tags | frozenset({"promoted"}),
-            confidence=experience.confidence,
-            metadata=dict(experience.metadata),
-            promoted_from=experience.experience_id,
-        )
+        try:
+            is_promotable_result, reason = is_promotable(experience)
+            if not is_promotable_result:
+                return False, reason, None
 
-        # Validate and store
-        is_valid, val_reason = validate_memory_content(entry, self._policy)
-        if not is_valid:
-            return False, val_reason, None
+            # Create learned memory entry
+            entry = MemoryEntry(
+                memory_id=experience.experience_id,
+                content=experience.observation or experience.action,
+                kind=MemoryKind.LEARNED,
+                scope=experience.to_scope(),
+                timestamp=experience.timestamp,
+                source=experience.source,
+                tags=experience.tags | frozenset({"promoted"}),
+                confidence=experience.confidence,
+                metadata=dict(experience.metadata),
+                promoted_from=experience.experience_id,
+            )
 
-        self._store.store(entry)
+            # Validate and store
+            is_valid, val_reason = validate_memory_content(entry, self._policy)
+            if not is_valid:
+                return False, val_reason, None
 
-        if self._storage is not None:
-            try:
-                self._storage.store(entry)
-            except Exception as e:
-                return False, f"persistence error: {e}", None
+            self._store.store(entry)
+
+            if self._storage is not None:
+                try:
+                    self._storage.store(entry)
+                except Exception as e:  # noqa: BLE001
+                    return False, f"persistence error: {_err(e)}", None
+        except Exception as e:  # noqa: BLE001 - hostile experiences degrade to rejection
+            self._error_count += 1
+            return False, f"promotion failed: {_err(e)}", None
 
         return True, "", entry
 
@@ -346,17 +437,22 @@ class MemoryManager:
         """
         self._operation_count += 1
 
-        result = consolidate_experiences(experiences, scope=scope)
+        try:
+            result = consolidate_experiences(experiences, scope=scope)
+        except Exception as e:  # noqa: BLE001 - hostile input degrades to empty result
+            self._error_count += 1
+            return ConsolidationResult(
+                provenance={"error": (_err(e),)},
+            )
         self._consolidation_history.append(result)
 
         # Store promoted entries
         for entry in result.promoted:
-            self._store.store(entry)
+            with contextlib.suppress(Exception):
+                self._store.store(entry)
             if self._storage is not None:
-                try:
+                with contextlib.suppress(Exception):
                     self._storage.store(entry)
-                except Exception:
-                    pass  # Best effort for consolidation
 
         return result
 
@@ -380,7 +476,13 @@ class MemoryManager:
         Returns:
             List of matching memory entries.
         """
-        return self._store.query(scope=scope, kind=kind, limit=limit)
+        try:
+            return self._store.query(
+                scope=scope, kind=kind, limit=max(0, coerce_int(limit, 100))
+            )
+        except Exception:  # noqa: BLE001 - hostile filters degrade to empty result
+            self._error_count += 1
+            return []
 
     def count_memories(
         self,
@@ -388,20 +490,28 @@ class MemoryManager:
         kind: MemoryKind | None = None,
     ) -> int:
         """Count memories with optional filtering."""
-        return self._store.count(scope=scope, kind=kind)
+        try:
+            return self._store.count(scope=scope, kind=kind)
+        except Exception:  # noqa: BLE001
+            self._error_count += 1
+            return 0
 
     def get_memory(self, memory_id: str) -> MemoryEntry | None:
         """Retrieve a specific memory by ID."""
-        return self._store.get(memory_id)
+        try:
+            return self._store.get(memory_id)
+        except Exception:  # noqa: BLE001 - hostile ids degrade to "not found"
+            return None
 
     def remove_memory(self, memory_id: str) -> bool:
         """Remove a memory by ID."""
-        removed = self._store.remove(memory_id)
+        try:
+            removed = self._store.remove(memory_id)
+        except Exception:  # noqa: BLE001
+            return False
         if removed and self._storage is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._storage.remove(memory_id)
-            except Exception:
-                pass
         return removed
 
     # ------------------------------------------------------------------
@@ -413,10 +523,21 @@ class MemoryManager:
 
         Returns:
             Number of entries loaded.
+
+        Raises:
+            PersistenceError: if the existing store state is corrupt or
+                unreadable (documented storage contract — corrupt state is
+                never silently treated as an empty store).
         """
         if self._storage is None:
             return 0
-        count = self._storage.reload()
+        try:
+            count = self._storage.reload()
+        except PersistenceError:
+            raise
+        except Exception as e:  # noqa: BLE001 - normalize to documented error
+            self._error_count += 1
+            raise PersistenceError(f"cannot reload store: {_err(e)}") from e
         # Rebuild in-memory store from persistence
         self._store.clear()
         for mid in self._storage.list_keys():
@@ -431,15 +552,25 @@ class MemoryManager:
 
     def stats(self) -> dict[str, Any]:
         """Return manager statistics."""
-        return {
-            "operation_count": self._operation_count,
-            "error_count": self._error_count,
-            "store_size": self._store.size,
-            "consolidations": len(self._consolidation_history),
-            "total_promoted": sum(
-                r.promoted_count for r in self._consolidation_history
-            ),
-        }
+        try:
+            return {
+                "operation_count": self._operation_count,
+                "error_count": self._error_count,
+                "store_size": self._store.size,
+                "consolidations": len(self._consolidation_history),
+                "total_promoted": sum(
+                    r.promoted_count for r in self._consolidation_history
+                ),
+            }
+        except Exception as e:  # noqa: BLE001 - stats must never raise
+            return {
+                "operation_count": self._operation_count,
+                "error_count": self._error_count + 1,
+                "store_size": -1,
+                "consolidations": 0,
+                "total_promoted": 0,
+                "stats_error": _err(e),
+            }
 
     def clear(self, scope: MemoryScope | None = None) -> int:
         """Clear memories, optionally scoped.
@@ -447,10 +578,12 @@ class MemoryManager:
         Returns:
             Number of memories cleared.
         """
-        count = self._store.clear(scope=scope)
+        try:
+            count = self._store.clear(scope=scope)
+        except Exception:  # noqa: BLE001
+            self._error_count += 1
+            return 0
         if self._storage is not None:
-            try:
+            with contextlib.suppress(Exception):
                 self._storage.clear(scope=scope)
-            except Exception:
-                pass
         return count

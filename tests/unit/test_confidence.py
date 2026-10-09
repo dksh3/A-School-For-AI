@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from core.learner.calibration.estimator import estimate_confidence_v232
 from core.learner.confidence import (
     ConfidenceConfig,
     ConfidenceLevel,
@@ -12,7 +13,6 @@ from core.learner.confidence import (
     detect_conflict_count,
     estimate_confidence,
 )
-from core.learner.calibration.estimator import estimate_confidence_v232
 
 # ---------------------------------------------------------------------------
 # Bayesian evidence strength

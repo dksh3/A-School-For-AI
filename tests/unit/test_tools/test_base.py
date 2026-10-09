@@ -1,5 +1,11 @@
 """Tests for tool base classes."""
-from core.routing.v26.tools.base import Tool, ToolResult, ToolRegistry, PipelineResult, BackgroundTask
+from core.routing.v26.tools.base import (
+    BackgroundTask,
+    PipelineResult,
+    Tool,
+    ToolRegistry,
+    ToolResult,
+)
 
 
 class TestToolResult:
@@ -36,7 +42,9 @@ class ConcreteTool(Tool):
         return {"input": {"type": "string"}}
 
     def execute(self, **kwargs) -> ToolResult:
-        return ToolResult(success=True, data={"input": kwargs.get("input", "")}, errors=[], metadata={})
+        return ToolResult(
+            success=True, data={"input": kwargs.get("input", "")}, errors=[], metadata={}
+        )
 
 
 class TestTool:

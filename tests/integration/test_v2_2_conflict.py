@@ -48,7 +48,9 @@ class TestV22EndToEnd:
         )
         # Train with conflicting outputs for similar inputs
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "use list.sort()"})
+        )
 
         result = learner.predict("sort a list")
         # Should detect a conflict since both are relevant with different outputs
@@ -63,7 +65,9 @@ class TestV22EndToEnd:
             ),
         )
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "use list.sort()"})
+        )
 
         result = learner.predict("sort a list")
         if result.has_conflict:
@@ -78,7 +82,9 @@ class TestV22EndToEnd:
             ),
         )
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "use list.sort()"})
+        )
 
         # Give positive feedback to "use sorted()" multiple times
         for _ in range(5):
@@ -145,7 +151,9 @@ class TestV22EndToEnd:
             ),
         )
         # These inputs are different enough that they shouldn't conflict
-        learner.learn(LearningInput(observation={"input": "open a file in Python", "output": "open()"}))
+        learner.learn(
+            LearningInput(observation={"input": "open a file in Python", "output": "open()"})
+        )
         learner.learn(LearningInput(observation={"input": "reverse a string", "output": "s[::-1]"}))
 
         result = learner.predict("open a file")
@@ -182,7 +190,9 @@ class TestV22EndToEnd:
             ),
         )
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "use list.sort()"})
+        )
 
         result = learner.predict("sort a list")
         summary = result.summary()
@@ -200,7 +210,9 @@ class TestV22EndToEnd:
             ),
         )
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "use list.sort()"})
+        )
 
         # Many rounds of feedback favoring "use sorted()"
         for _ in range(10):

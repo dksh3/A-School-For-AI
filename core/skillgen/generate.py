@@ -18,6 +18,9 @@ from core.skillgen.types import (
     SkillEvent,
     SkillScope,
     SkillState,
+    safe_float,
+    safe_list_str,
+    safe_str,
 )
 
 _SCOPE_BY_EXPERIENCE = {
@@ -28,18 +31,21 @@ _SCOPE_BY_EXPERIENCE = {
 }
 
 
-def _slug(text: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+def _slug(text: Any) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", safe_str(text, 200).lower()).strip("-")
     return slug[:64].strip("-") or "skill"
 
 
 def experience_scope(experience: Experience) -> SkillScope:
     """Narrowest scope implied by where the experience happened."""
-    if experience.session is not None:
-        return SkillScope.SESSION
-    if experience.project is not None:
-        return SkillScope.PROJECT
-    return SkillScope.AGENT
+    try:
+        if experience.session is not None:
+            return SkillScope.SESSION
+        if experience.project is not None:
+            return SkillScope.PROJECT
+        return SkillScope.AGENT
+    except Exception:  # noqa: BLE001 - hostile experience
+        return SkillScope.AGENT
 
 
 def decide_scope(judgment: Judgment, experience: Experience) -> SkillScope:
@@ -48,27 +54,32 @@ def decide_scope(judgment: Judgment, experience: Experience) -> SkillScope:
     GLOBAL requires generalizable=true and model confidence >= 0.8.
     Otherwise the narrower of (proposal, experience scope) wins.
     """
-    proposed = _SCOPE_BY_EXPERIENCE.get(judgment.proposed_scope, SkillScope.SESSION)
-    if proposed == SkillScope.GLOBAL:
-        if judgment.generalizable and judgment.confidence >= 0.8:
-            return SkillScope.GLOBAL
-        return experience_scope(experience)
-    native = experience_scope(experience)
-    order = [SkillScope.SESSION, SkillScope.PROJECT, SkillScope.AGENT, SkillScope.GLOBAL]
-    # Narrower wins: a session/project experience may never leak wider than
-    # where it happened (GLOBAL escalation is gated above). Narrowing is only
-    # allowed when the experience actually carries that identity - a PROJECT
-    # skill with an empty project id would be unreachable (caught by self-test).
-    if proposed == SkillScope.SESSION and experience.session is None:
-        return native
-    if proposed == SkillScope.PROJECT and experience.project is None:
-        return native
-    return proposed if order.index(proposed) <= order.index(native) else native
+    try:
+        proposed = _SCOPE_BY_EXPERIENCE.get(
+            safe_str(judgment.proposed_scope, 32), SkillScope.SESSION
+        )
+        if proposed == SkillScope.GLOBAL:
+            if judgment.generalizable and safe_float(judgment.confidence) >= 0.8:
+                return SkillScope.GLOBAL
+            return experience_scope(experience)
+        native = experience_scope(experience)
+        order = [SkillScope.SESSION, SkillScope.PROJECT, SkillScope.AGENT, SkillScope.GLOBAL]
+        # Narrower wins: a session/project experience may never leak wider than
+        # where it happened (GLOBAL escalation is gated above). Narrowing is only
+        # allowed when the experience actually carries that identity - a PROJECT
+        # skill with an empty project id would be unreachable (caught by self-test).
+        if proposed == SkillScope.SESSION and experience.session is None:
+            return native
+        if proposed == SkillScope.PROJECT and experience.project is None:
+            return native
+        return proposed if order.index(proposed) <= order.index(native) else native
+    except Exception:  # noqa: BLE001 - hostile judgment/experience
+        return SkillScope.SESSION
 
 
-def _generalize(text: str) -> str:
+def _generalize(text: Any) -> str:
     """Strip project-specific phrasing from model-provided text."""
-    out = text
+    out = safe_str(text, 20_000)
     for pat in (
         r"\bthis project'?s?\b",
         r"\bthis repo(sitory)?\b",
@@ -86,24 +97,34 @@ def generalize(
     merge_hint: str = "",
 ) -> Skill:
     """Build a Skill draft from experience + judgment (not yet validated)."""
-    skill_type = judgment.skill_type or "workflow"
-    name = _slug(judgment.proposed_name) if judgment.proposed_name else _slug(
-        judgment.reason or experience.action or "learned-skill"
+    skill_type = safe_str(judgment.skill_type, 32) or "workflow"
+    proposed = safe_str(judgment.proposed_name, 200)
+    name = _slug(proposed) if proposed else _slug(
+        safe_str(judgment.reason, 200)
+        or safe_str(experience.action, 200)
+        or "learned-skill"
     )
     if not NAME_RE.match(name):
         name = f"{skill_type}-{name}"[:64].strip("-")
     scope = decide_scope(judgment, experience)
 
-    procedure = [_generalize(s) for s in judgment.procedure_steps if s.strip()]
+    procedure = [
+        _generalize(s) for s in safe_list_str(judgment.procedure_steps, 6, 400)
+        if _generalize(s)
+    ]
     if not procedure:
         procedure = [
             f"Recognize the situation: {_generalize(experience.observation)[:200]}",
             f"Apply the proven approach: {_generalize(experience.action)[:200]}",
             "Verify the outcome matches the expected result.",
         ]
-    triggers = [_generalize(t) for t in judgment.triggers if t.strip()]
+    triggers = [
+        _generalize(t) for t in safe_list_str(judgment.triggers, 4, 200)
+        if _generalize(t)
+    ]
     if not triggers:
         triggers = [_generalize(experience.observation)[:160]]
+    confidence = max(0.3, min(safe_float(judgment.confidence, 0.5), 0.7))
 
     skill = Skill(
         name=name,
@@ -118,72 +139,89 @@ def generalize(
             "This is an instructional procedure, not executable code.",
             "Stay within the task's security and scope boundaries.",
         ],
-        confidence=max(0.3, min(judgment.confidence, 0.7)),  # limited initial trust
-        created_from=[experience.experience_id],
+        confidence=confidence,  # limited initial trust
+        created_from=[safe_str(experience.experience_id, 200)],
         state=SkillState.CANDIDATE,
         scope=scope,
-        agent_id=experience.agent.agent_id,
-        project_id=experience.project.project_id if experience.project else "",
-        session_id=experience.session.session_id if experience.session else "",
+        agent_id=safe_str(experience.agent.agent_id, 200),
+        project_id=safe_str(experience.project.project_id, 200)
+        if experience.project
+        else "",
+        session_id=safe_str(experience.session.session_id, 200)
+        if experience.session
+        else "",
         tags=[skill_type],
         provenance={
-            "created_by": model_id,
-            "judge": model_id,
+            "created_by": safe_str(model_id, 100),
+            "judge": safe_str(model_id, 100),
             "skill_type": skill_type,
-            "evidence": [experience.experience_id],
+            "evidence": [safe_str(experience.experience_id, 200)],
             "judgment": judgment.to_dict(),
             "generalized": True,
-            "merge_hint": merge_hint or None,
+            "merge_hint": safe_str(merge_hint, 100) or None,
         },
         history=[
             SkillEvent(
                 version=1,
                 event="generated",
-                reason=f"judged worth_creating (conf={judgment.confidence:.2f})",
-                timestamp=experience.timestamp or 0.0,
-                confidence=max(0.3, min(judgment.confidence, 0.7)),
-                experience_id=experience.experience_id,
-                actor=model_id,
+                reason=f"judged worth_creating (conf={confidence:.2f})",
+                timestamp=safe_float(experience.timestamp),
+                confidence=confidence,
+                experience_id=safe_str(experience.experience_id, 200),
+                actor=safe_str(model_id, 100),
             )
         ],
     )
     return skill
 
 
-def build_manual_skill(payload: dict[str, Any], agent_id: str, project: str,
-                       session: str) -> Skill:
-    """Explicit agent-created skill (skill_create) - starts as CANDIDATE."""
-    now_str = 0.0
-    scope = _SCOPE_BY_EXPERIENCE.get(str(payload.get("scope", "")))
+def build_manual_skill(payload: Any, agent_id: Any, project: Any,
+                       session: Any) -> Skill:
+    """Explicit agent-created skill (skill_create) - starts as CANDIDATE.
+
+    Never raises: hostile payloads are coerced to safe bounded fields.
+    """
+    if not isinstance(payload, dict):
+        payload = {}
+
+    def _get(key: str, default: Any = None) -> Any:
+        try:
+            return payload.get(key, default)
+        except Exception:  # noqa: BLE001 - hostile mapping
+            return default
+
+    confidence = max(0.0, min(safe_float(_get("confidence", 0.5), 0.5), 1.0))
+    scope = _SCOPE_BY_EXPERIENCE.get(safe_str(_get("scope", ""), 32))
     if scope is None:
-        scope = SkillScope.PROJECT if project else SkillScope.AGENT
+        scope = SkillScope.PROJECT if safe_str(project, 200) else SkillScope.AGENT
+    agent_str = safe_str(agent_id, 200) or "opencode"
     return Skill(
-        name=_slug(str(payload.get("name", ""))),
-        description=str(payload.get("description", ""))[:4000],
-        purpose=str(payload.get("purpose", ""))[:4000],
-        triggers=[str(t) for t in payload.get("triggers", [])][:8],
-        inputs=[str(i) for i in payload.get("inputs", [])][:8],
-        procedure=[str(s) for s in payload.get("procedure", [])][:40],
-        expected_output=str(payload.get("expected_output", ""))[:4000],
-        constraints=[str(c) for c in payload.get("constraints", [])][:16],
-        examples=[str(e) for e in payload.get("examples", [])][:8],
-        confidence=max(0.0, min(float(payload.get("confidence", 0.5)), 1.0)),
-        created_from=[str(c) for c in payload.get("created_from", [])][:8],
+        name=_slug(_get("name", "")),
+        description=safe_str(_get("description", ""), 4000),
+        purpose=safe_str(_get("purpose", ""), 4000),
+        triggers=safe_list_str(_get("triggers", []), 8, 400),
+        inputs=safe_list_str(_get("inputs", []), 8, 400),
+        procedure=safe_list_str(_get("procedure", []), 40, 4000),
+        expected_output=safe_str(_get("expected_output", ""), 4000),
+        constraints=safe_list_str(_get("constraints", []), 16, 400),
+        examples=safe_list_str(_get("examples", []), 8, 400),
+        confidence=confidence,
+        created_from=safe_list_str(_get("created_from", []), 8, 200),
         provenance={"created_by": "manual", "judge": "manual", "evidence": []},
         state=SkillState.CANDIDATE,
         scope=scope,
-        agent_id=str(payload.get("agent_id", "")) or agent_id,
-        project_id=str(payload.get("project_id", "")) or project,
-        session_id=str(payload.get("session_id", "")) or session,
-        tags=[str(t) for t in payload.get("tags", [])][:8],
+        agent_id=safe_str(_get("agent_id", ""), 200) or agent_str,
+        project_id=safe_str(_get("project_id", ""), 200) or safe_str(project, 200),
+        session_id=safe_str(_get("session_id", ""), 200) or safe_str(session, 200),
+        tags=safe_list_str(_get("tags", []), 8, 100),
         history=[
             SkillEvent(
                 version=1,
                 event="created",
                 reason="manual creation via skill_create",
-                timestamp=now_str,
-                confidence=max(0.0, min(float(payload.get("confidence", 0.5)), 1.0)),
-                actor=agent_id,
+                timestamp=0.0,
+                confidence=confidence,
+                actor=agent_str,
             )
         ],
     )

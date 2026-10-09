@@ -65,7 +65,9 @@ class TestAdversarialConfidence:
             conflict_config=CC(input_similarity_threshold=0.5),
         )
         learner.learn(LearningInput(observation={"input": "sort a list", "output": "use sorted()"}))
-        learner.learn(LearningInput(observation={"input": "sort a list", "output": "use list.sort()"}))
+        learner.learn(
+            LearningInput(observation={"input": "sort a list", "output": "use list.sort()"})
+        )
 
         result = learner.predict("sort a list")
         # Should have a conflict and reduced confidence

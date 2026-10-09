@@ -72,7 +72,9 @@ class HarnessAdapter(ABC):
         ...
 
     @abstractmethod
-    async def send_prompt(self, prompt: str, context: dict[str, Any] | None = None) -> AdapterResponse:
+    async def send_prompt(
+        self, prompt: str, context: dict[str, Any] | None = None
+    ) -> AdapterResponse:
         """Send a prompt to the underlying harness and return the response.
 
         Args:

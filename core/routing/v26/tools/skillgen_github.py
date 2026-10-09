@@ -2,15 +2,40 @@
 
 Thin adapters over core.skillgen.github: each tool is opt-in, network-bound
 discovery only (no Phase 1 tool ever performs network I/O). Failures return
-structured errors; local skillgen keeps working offline.
+structured errors; local skillgen keeps working offline. Fail-open: hostile
+arguments and any residual discovery error convert to structured errors -
+these tools NEVER raise at the boundary.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from core.routing.v26.tools.base import Tool, ToolResult
-from core.routing.v26.tools.skillgen import _SCOPE_PROPS, _result
+from core.routing.v26.tools.skillgen import (
+    _SCOPE_PROPS,
+    _bool_of,
+    _fail_open,
+    _result,
+    _text_of,
+    _worktree_of,
+)
 from core.skillgen.github import discovery
 from core.skillgen.registry import registry_for
+from core.skillgen.types import safe_list_str, safe_str
+
+
+def _error_report(exc: Exception) -> dict[str, Any]:
+    """Convert an unexpected discovery-layer failure to a structured report."""
+    return {
+        "ok": False,
+        "reason": f"internal_error:{type(exc).__name__}",
+        "detail": safe_str(exc, 200),
+    }
+
+
+def _keywords_of(value: Any) -> list[str]:
+    return safe_list_str(value, 8, 64)
 
 _GAP_PROPS = {
     "task": {
@@ -71,13 +96,17 @@ class SkillSearchGithubTool(Tool):
             "required": [],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        report = discovery.search_github(
-            task=str(kwargs.get("task") or ""),
-            capability_gap=str(kwargs.get("capability_gap") or ""),
-            keywords=[str(k) for k in (kwargs.get("keywords") or [])][:8],
-            skill_name=str(kwargs.get("skill_name") or ""),
-        )
+        try:
+            report = discovery.search_github(
+                task=_text_of(kwargs.get("task"), 2000),
+                capability_gap=_text_of(kwargs.get("capability_gap"), 2000),
+                keywords=_keywords_of(kwargs.get("keywords")),
+                skill_name=_text_of(kwargs.get("skill_name"), 200),
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery layer is untrusted
+            report = _error_report(exc)
         return _result(self.name, report)
 
 
@@ -105,13 +134,17 @@ class SkillDiscoverTool(Tool):
             "required": [],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        report = discovery.discover(
-            task=str(kwargs.get("task") or ""),
-            capability_gap=str(kwargs.get("capability_gap") or ""),
-            keywords=[str(k) for k in (kwargs.get("keywords") or [])][:8],
-            skill_name=str(kwargs.get("skill_name") or ""),
-        )
+        try:
+            report = discovery.discover(
+                task=_text_of(kwargs.get("task"), 2000),
+                capability_gap=_text_of(kwargs.get("capability_gap"), 2000),
+                keywords=_keywords_of(kwargs.get("keywords")),
+                skill_name=_text_of(kwargs.get("skill_name"), 200),
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery layer is untrusted
+            report = _error_report(exc)
         return _result(self.name, report)
 
 
@@ -142,18 +175,22 @@ class SkillAnalyzeExternalTool(Tool):
             "required": ["owner", "repo"],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        owner = str(kwargs.get("owner") or "")
-        repo = str(kwargs.get("repo") or "")
+        owner = _text_of(kwargs.get("owner"), 200).strip()
+        repo = _text_of(kwargs.get("repo"), 200).strip()
         if not owner or not repo:
             return _result(self.name, {"ok": False, "reason": "owner and repo required"})
-        report = discovery.analyze_external(
-            owner,
-            repo,
-            file_path=str(kwargs.get("file_path") or ""),
-            task=str(kwargs.get("task") or ""),
-            registry=registry_for(kwargs.get("worktree") or "."),
-        )
+        try:
+            report = discovery.analyze_external(
+                owner,
+                repo,
+                file_path=_text_of(kwargs.get("file_path"), 500),
+                task=_text_of(kwargs.get("task"), 2000),
+                registry=registry_for(_worktree_of(kwargs)),
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery layer is untrusted
+            report = _error_report(exc)
         return _result(self.name, report)
 
 
@@ -181,17 +218,21 @@ class SkillCompareTool(Tool):
             "required": ["owner", "repo"],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        owner = str(kwargs.get("owner") or "")
-        repo = str(kwargs.get("repo") or "")
+        owner = _text_of(kwargs.get("owner"), 200).strip()
+        repo = _text_of(kwargs.get("repo"), 200).strip()
         if not owner or not repo:
             return _result(self.name, {"ok": False, "reason": "owner and repo required"})
-        report = discovery.compare(
-            owner,
-            repo,
-            file_path=str(kwargs.get("file_path") or ""),
-            registry=registry_for(kwargs.get("worktree") or "."),
-        )
+        try:
+            report = discovery.compare(
+                owner,
+                repo,
+                file_path=_text_of(kwargs.get("file_path"), 500),
+                registry=registry_for(_worktree_of(kwargs)),
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery layer is untrusted
+            report = _error_report(exc)
         return _result(self.name, report)
 
 
@@ -238,23 +279,27 @@ class SkillImportTool(Tool):
             "required": ["owner", "repo", "approve"],
         }
 
+    @_fail_open
     def execute(self, **kwargs) -> ToolResult:
-        owner = str(kwargs.get("owner") or "")
-        repo = str(kwargs.get("repo") or "")
+        owner = _text_of(kwargs.get("owner"), 200).strip()
+        repo = _text_of(kwargs.get("repo"), 200).strip()
         if not owner or not repo:
             return _result(self.name, {"ok": False, "reason": "owner and repo required"})
-        report = discovery.import_external(
-            owner,
-            repo,
-            file_path=str(kwargs.get("file_path") or ""),
-            approve=bool(kwargs.get("approve")),
-            scope=str(kwargs.get("scope") or "agent"),
-            acknowledge_license=bool(kwargs.get("acknowledge_license")),
-            registry=registry_for(kwargs.get("worktree") or "."),
-            agent_id=str(kwargs.get("agent_id") or "opencode"),
-            project_id=str(kwargs.get("project") or ""),
-            session_id=str(kwargs.get("session") or ""),
-        )
+        try:
+            report = discovery.import_external(
+                owner,
+                repo,
+                file_path=_text_of(kwargs.get("file_path"), 500),
+                approve=_bool_of(kwargs.get("approve")),
+                scope=_text_of(kwargs.get("scope"), 32) or "agent",
+                acknowledge_license=_bool_of(kwargs.get("acknowledge_license")),
+                registry=registry_for(_worktree_of(kwargs)),
+                agent_id=_text_of(kwargs.get("agent_id"), 200) or "opencode",
+                project_id=_text_of(kwargs.get("project"), 200),
+                session_id=_text_of(kwargs.get("session"), 200),
+            )
+        except Exception as exc:  # noqa: BLE001 - discovery layer is untrusted
+            report = _error_report(exc)
         return _result(self.name, report)
 
 

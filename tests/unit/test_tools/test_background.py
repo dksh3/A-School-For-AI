@@ -1,8 +1,7 @@
 """Tests for background worker."""
-import pytest
-from core.routing.v26.tools.base import Tool, ToolResult, ToolRegistry
-from core.routing.v26.orchestrator import Orchestrator
 from core.routing.v26.background import BackgroundWorker
+from core.routing.v26.orchestrator import Orchestrator
+from core.routing.v26.tools.base import Tool, ToolRegistry, ToolResult
 
 
 class MockTool(Tool):
