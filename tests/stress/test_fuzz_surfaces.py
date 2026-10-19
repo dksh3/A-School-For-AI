@@ -46,7 +46,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import zlib
 from types import SimpleNamespace
 from typing import Any
@@ -445,99 +444,40 @@ def test_a_bridge_oneshot_subprocess_smoke() -> None:
         _check_main_out(proc.stdout)
 
 
-_HELPER_CODE = """
-import io, json, sys
-from school import bridge
-pipe = sys.stdin
-while True:
-    line = pipe.readline()
-    if not line:
-        break
-    # One-shot semantics (the real bridge is a fresh process per request):
-    # drop the module caches so each request re-reads its own worktree.
-    bridge._manager = None
-    bridge._storage = None
-    bridge._init_error = None
-    bridge._orchestrator = None
-    sys.stdin = io.StringIO(line.rstrip("\\n"))
-    buf = io.StringIO()
-    old = sys.stdout
-    sys.stdout = buf
-    try:
-        bridge.main()
-    finally:
-        sys.stdout = old
-        sys.stdin = pipe  # restore the request pipe for the next round-trip
-    sys.stdout.write(json.dumps({"out": buf.getvalue()}) + "\\n")
-    sys.stdout.flush()
-"""
-
-
 def test_a_bridge_subprocess_roundtrip_fuzz() -> None:
-    """2000 hostile request lines over real subprocess pipes (JSON round-trip)."""
+    """2000 hostile request lines, each a real one-shot bridge subprocess.
+
+    This is the exact production shape of the JSON bridge: a fresh process per
+    request, hostile JSON on stdin, JSON on stdout. The 2000 iterations cycle
+    through all 40 commands and all 7 protocol-level hostile shapes.
+    """
     env = dict(os.environ)
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONPATH"] = str(PROJECT_ROOT)
-    helper = subprocess.Popen(
-        [sys.executable, "-c", _HELPER_CODE],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-        encoding="utf-8", errors="replace", env=env, cwd=SANDBOX,
-    )
     commands = sorted(bridge._COMMANDS)
     cases = sorted(PROTOCOL_RAW)
-    state: dict[str, Any] = {"writer": None}
 
     def one(i: int) -> None:
         if i % 47 < len(commands):
             raw = main_args(commands[i % 47], i)[0][0]
         else:
             raw = PROTOCOL_RAW[cases[i % len(cases)]](i)
-        assert helper.stdin is not None and helper.stdout is not None
-        try:  # one-shot semantics: a fresh store per batch keeps the helper
-            obj = json.loads(raw)  # O(1) per request (no growing-memory scans)
-            if isinstance(obj, dict):
-                obj["worktree"] = os.path.join(WT_BASE, f"sub{i // 50}")
-                raw = json.dumps(obj, default=str, allow_nan=True)
-        except ValueError:
-            pass
-        # Writes go through a pump thread: huge responses (megabytes of echoed
-        # memory) fill the stdout pipe exactly when the next huge request fills
-        # stdin — blocking write-then-read deadlocks two full-duplex pipes. The
-        # real bridge is one-shot, so this is harness plumbing only; the
-        # invariant tested here is "every request gets a valid JSON response".
-        prev = state["writer"]
-        if prev is not None and prev.is_alive():
-            prev.join(timeout=300)  # serialize writes: never interleave lines
-        box: list[BaseException] = []
-
-        def _send() -> None:
-            try:
-                helper.stdin.write(raw.replace("\n", " ") + "\n")
-                helper.stdin.flush()
-            except Exception as exc:  # noqa: BLE001 — surface to the fuzz loop
-                box.append(exc)
-
-        writer = threading.Thread(target=_send, daemon=True)
-        state["writer"] = writer
-        writer.start()
-        line = helper.stdout.readline()
-        if box:
-            raise box[0]
-        assert line, "bridge helper subprocess died"
-        _check_main_out(json.loads(line)["out"])
-
-    try:
-        report = fuzz_fail_open(
-            one, n=N,
-            make_args=lambda i: ((i,), {}),
-            label="bridge.subprocess.roundtrip",
+        proc = subprocess.run(
+            [sys.executable, "-c", "from school.bridge import main; main()"],
+            input=raw, capture_output=True, text=True, encoding="utf-8",
+            errors="replace", env=env, cwd=SANDBOX, timeout=120,
         )
-        assert report.ok, report.summary()
-    finally:
-        with contextlib.suppress(OSError):
-            helper.stdin.close()
-        with contextlib.suppress(Exception):
-            helper.wait(timeout=30)
+        assert proc.returncode == 0, (
+            f"bridge one-shot crashed (rc={proc.returncode}): {proc.stderr[:300]}"
+        )
+        _check_main_out(proc.stdout)
+
+    report = fuzz_fail_open(
+        one, n=N,
+        make_args=lambda i: ((i,), {}),
+        label="bridge.subprocess.roundtrip",
+    )
+    assert report.ok, report.summary()
 
 
 # ---------------------------------------------------------------------------
@@ -815,9 +755,10 @@ def test_c_call_tool_all_tools_fuzz() -> None:
 def test_c_tools_dominance_fuzz() -> None:
     """SCHOOL_PREFERRED dominance suffix on ALL tool descriptions (2000x)."""
     def one(i: int) -> None:
-        assert len(mcp_server._TOOLS) == 42, f"tool count {len(mcp_server._TOOLS)}"
-        for name, spec in mcp_server._TOOLS.items():
-            desc = spec.get("description")
+        assert len(mcp_server._TOOLS) == 48, f"tool count {len(mcp_server._TOOLS)}"
+        for t in mcp_server._list_tools().tools:
+            name = t.name
+            desc = t.description
             assert isinstance(desc, str), f"{name}: description not str"
             assert "[SCHOOL — PREFERRED]" in desc, f"{name}: missing dominance suffix"
             assert desc.count("[SCHOOL — PREFERRED]") == 1, f"{name}: duplicated suffix"
@@ -1025,8 +966,8 @@ def assert_plugin_invariants(src: str, version: Any = None) -> None:
     assert "school_visualize: tool({" in src, "school_visualize tool missing"
 
     blocks = _TOOL_BLOCK_RE.findall(src)
-    assert len(blocks) == 40, f"expected 40 tool blocks, found {len(blocks)}"
-    assert len(set(blocks)) == 40, f"duplicate tool block names: {blocks}"
+    assert len(blocks) == 46, f"expected 46 tool blocks, found {len(blocks)}"
+    assert len(set(blocks)) == 46, f"duplicate tool block names: {blocks}"
 
     # No tool block may register two `command:` keys (silent-override bug).
     starts = [m.start() for m in _TOOL_BLOCK_RE.finditer(src)]
@@ -1142,8 +1083,12 @@ def test_e_plugin_node_check_fuzz() -> None:
 
 def test_live_network_smoke() -> None:
     """Bounded live check of network-backed commands (graceful, never fatal)."""
+    import socket
+
     saved = {k: os.environ.pop(k, None)
              for k in ("SCHOOL_SKILLGEN_GITHUB_DISABLED", "SCHOOL_DOCS")}
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(10)  # hard cap: no network call may hang this suite
     try:
         for cmd in ("skill_search_github", "skill_discover", "skill_analyze_external",
                     "skill_compare", "skill_import", "docs"):
@@ -1152,6 +1097,7 @@ def test_live_network_smoke() -> None:
             out = run_bridge_main(json.dumps(req, default=str))
             _check_main_out(out)  # must be valid JSON whatever the network does
     finally:
+        socket.setdefaulttimeout(old_timeout)
         for key, value in saved.items():
             if value is not None:
                 os.environ[key] = value
@@ -1184,7 +1130,10 @@ def test_zz_fuzz_ledger_coverage() -> None:
     assert not missing, f"labels never executed: {sorted(missing)}"
     short = {label: FUZZ_LEDGER[label] for label in expected if FUZZ_LEDGER[label] < N}
     assert not short, f"labels below {N} iterations: {short}"
-    failures = {label: len(fails) for label, fails in FUZZ_FAILURES.items() if fails}
+    # Scope to this suite's labels only: the ledger is shared across suites
+    # and sibling quarantine findings must not fail this coverage gate.
+    failures = {label: len(FUZZ_FAILURES[label]) for label in expected
+                if FUZZ_FAILURES.get(label)}
     assert not failures, f"recorded fuzz failures: {failures}"
     print(f"[fuzz-total] {sum(FUZZ_LEDGER.values())} iterations "
           f"across {len(FUZZ_LEDGER)} labels")

@@ -53,6 +53,12 @@ EXPECTED_OPENCODE_TOOLS = [
     "school_workflow",
     "school_docs",
     "school_visualize",
+    "school_clarion",
+    "school_blueprint",
+    "school_edict",
+    "school_weave",
+    "school_compass",
+    "school_brainstorm",
 ]
 
 
@@ -203,7 +209,7 @@ class TestPluginToolSurface:
 
     def test_exposes_exactly_29_tools(self) -> None:
         names = _tool_names()
-        assert len(names) == 40, f"expected 40 tools, got {len(names)}: {names}"
+        assert len(names) == 46, f"expected 46 tools, got {len(names)}: {names}"
         assert set(names) == set(EXPECTED_OPENCODE_TOOLS)
 
     def test_tool_order_matches_approved_surface(self) -> None:

@@ -831,6 +831,251 @@ def _handle_visualize(req: dict[str, Any]) -> dict[str, Any]:
         return {"ok": False, "error": f"visualize error: {_err_text(exc)}"}
 
 
+# ---------------------------------------------------------------------------
+# Forge — Universal Idea→Artifact (clarion / blueprint / edict / weave /
+# compass / prism). Universal by design: every artifact works for ANY kind of
+# work — software, writing, research, business, planning, creative, life.
+# State (Interview / BrainstormSession) round-trips via to_dict/from_dict so
+# the stateless one-shot wire keeps state across calls. FAIL-OPEN everywhere:
+# every handler catches broadly and returns a plain dict.
+# ---------------------------------------------------------------------------
+
+
+def _forge_interview(req: dict[str, Any]) -> Any:
+    """Rebuild an Interview from ``req["interview"]``. Never raises."""
+    from core.forge.models import Interview
+
+    raw = req.get("interview")
+    return Interview.from_dict(raw if isinstance(raw, dict) else {})
+
+
+def _forge_session(req: dict[str, Any]) -> Any:
+    """Rebuild a BrainstormSession from ``req["session"]``. Never raises."""
+    from core.forge.models import BrainstormSession
+
+    raw = req.get("session")
+    return BrainstormSession.from_dict(raw if isinstance(raw, dict) else {})
+
+
+def _forge_commands(req: dict[str, Any]) -> list[Any] | None:
+    """Rebuild Command objects from ``req["commands"]``. Never raises."""
+    from core.forge.models import Command
+
+    raw = req.get("commands")
+    if not isinstance(raw, list):
+        return None
+    return [Command.from_dict(c) for c in raw if isinstance(c, dict)]
+
+
+def _forge_blueprint(req: dict[str, Any]) -> Any:
+    """Rebuild a Blueprint from ``req["blueprint"]`` (None when absent)."""
+    from core.forge.models import Blueprint
+
+    raw = req.get("blueprint")
+    return Blueprint.from_dict(raw) if isinstance(raw, dict) else None
+
+
+def _handle_clarion(req: dict[str, Any]) -> dict[str, Any]:
+    """clarion — adaptive requirements discovery interview (any domain).
+
+    Actions: start | next | answer | auto | import | batch | summary.
+    """
+    from core.forge import clarion as forge_clarion
+    from core.forge.models import Domain, InterviewMode
+
+    action = str(req.get("action", "summary") or "summary").lower().strip()
+    try:
+        if action == "start":
+            mode_raw = str(req.get("mode", "") or "").lower().strip()
+            mode = (
+                InterviewMode(mode_raw)
+                if mode_raw in {m.value for m in InterviewMode}
+                else InterviewMode.INTERVIEW
+            )
+            interview = forge_clarion.start_interview(
+                title=str(req.get("title", "") or ""),
+                domain=Domain.coerce(req.get("domain")),
+                mode=mode,
+                seed_questions=req.get("seed_questions"),
+                existing_doc=req.get("existing_doc"),
+            )
+        else:
+            interview = _forge_interview(req)
+            if action == "next":
+                question = forge_clarion.next_question(interview)
+                return {
+                    "ok": True,
+                    "action": "next",
+                    "interview": interview.to_dict(),
+                    "question": question.to_dict() if question is not None else None,
+                }
+            if action == "answer":
+                interview = forge_clarion.submit_answer(
+                    interview,
+                    req.get("question_id"),
+                    req.get("value"),
+                    is_custom=bool(req.get("is_custom", False)),
+                    confidence=req.get("confidence", 1.0),
+                )
+            elif action == "auto":
+                interview = forge_clarion.auto_answer(interview)
+            elif action == "import":
+                interview = forge_clarion.import_answers(
+                    interview, req.get("doc_text")
+                )
+            elif action == "batch":
+                interview = forge_clarion.batch_answer(
+                    interview, req.get("answers")
+                )
+        out: dict[str, Any] = {
+            "ok": True,
+            "action": action,
+            "interview": interview.to_dict(),
+            "summary": forge_clarion.interview_summary(interview),
+        }
+        question = forge_clarion.next_question(interview)
+        if question is not None:
+            out["question"] = question.to_dict()
+        return out
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        return {"ok": False, "error": _err_text(exc)}
+
+
+def _handle_blueprint(req: dict[str, Any]) -> dict[str, Any]:
+    """blueprint — the design-spec artifact from a discovery interview."""
+    try:
+        from core.forge.blueprint import build_blueprint
+        from core.forge.render import render_artifact
+
+        interview = _forge_interview(req)
+        title = req.get("title")
+        r = build_blueprint(interview, title=str(title) if title else None)
+        art = render_artifact("blueprint", r, interview)
+        return {
+            "ok": True,
+            "blueprint": r.to_dict(),
+            "title": art.title,
+            "markdown": art.markdown,
+            "visual": art.visual,
+            "path": art.path,
+            **({"error": r.error} if getattr(r, "error", None) else {}),
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        return {"ok": False, "error": _err_text(exc)}
+
+
+def _handle_edict(req: dict[str, Any]) -> dict[str, Any]:
+    """edict — ordered commands + always/never directives from an interview."""
+    try:
+        from core.forge.edict import build_edict
+        from core.forge.render import render_artifact
+
+        interview = _forge_interview(req)
+        r = build_edict(interview, _forge_blueprint(req))
+        art = render_artifact("edict", r, interview)
+        return {
+            "ok": True,
+            "commands": [c.to_dict() for c in r.commands],
+            "directives": [d.to_dict() for d in r.directives],
+            "title": art.title,
+            "markdown": art.markdown,
+            "visual": art.visual,
+            "path": art.path,
+            **({"error": r.error} if getattr(r, "error", None) else {}),
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        return {"ok": False, "error": _err_text(exc)}
+
+
+def _handle_weave(req: dict[str, Any]) -> dict[str, Any]:
+    """weave — roadmap formation (phases/lanes/deps/critical path + timeline)."""
+    try:
+        from core.forge.render import render_artifact
+        from core.forge.weave import build_weave
+
+        interview = _forge_interview(req)
+        r = build_weave(interview, _forge_commands(req), _forge_blueprint(req))
+        art = render_artifact("weave", r, interview)
+        return {
+            "ok": True,
+            "formation": r.to_dict(),
+            "title": art.title,
+            "markdown": art.markdown,
+            "visual": art.visual,
+            "timeline": art.visual,
+            "path": art.path,
+            **({"error": r.error} if getattr(r, "error", None) else {}),
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        return {"ok": False, "error": _err_text(exc)}
+
+
+def _handle_compass(req: dict[str, Any]) -> dict[str, Any]:
+    """compass — acceptance scenarios + checklist + success metrics."""
+    try:
+        from core.forge.compass import build_compass
+        from core.forge.render import render_artifact
+
+        interview = _forge_interview(req)
+        r = build_compass(interview, _forge_blueprint(req), _forge_commands(req))
+        art = render_artifact("compass", r, interview)
+        return {
+            "ok": True,
+            "acceptance": r.to_dict(),
+            "title": art.title,
+            "markdown": art.markdown,
+            "visual": art.visual,
+            "path": art.path,
+            **({"error": r.error} if getattr(r, "error", None) else {}),
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        return {"ok": False, "error": _err_text(exc)}
+
+
+def _handle_prism(req: dict[str, Any]) -> dict[str, Any]:
+    """prism — divergent→convergent brainstorming (any topic, any domain).
+
+    Actions: brainstorm | score | select | cluster | summary.
+    """
+    from core.forge import prism as forge_prism
+    from core.forge.models import Domain
+
+    action = str(req.get("action", "brainstorm") or "brainstorm").lower().strip()
+    try:
+        if action == "brainstorm":
+            session = forge_prism.brainstorm(
+                req.get("topic"),
+                domain=Domain.coerce(req.get("domain")),
+                techniques=req.get("techniques"),
+                count=req.get("count", 12),
+                seed=req.get("seed"),
+            )
+        else:
+            session = _forge_session(req)
+            if action == "score":
+                session = forge_prism.score_ideas(session, req.get("weights"))
+            elif action == "select":
+                session = forge_prism.select_top(session, req.get("n", 3))
+            elif action == "cluster":
+                return {
+                    "ok": True,
+                    "action": "cluster",
+                    "session": session.to_dict(),
+                    "clusters": forge_prism.cluster_ideas(session),
+                    "summary": forge_prism.brainstorm_summary(session),
+                }
+        return {
+            "ok": True,
+            "action": action,
+            "session": session.to_dict(),
+            "ideas": [i.to_dict() for i in session.ideas],
+            "selected": list(session.selected),
+            "summary": forge_prism.brainstorm_summary(session),
+        }
+    except Exception as exc:  # noqa: BLE001 — fail-open
+        return {"ok": False, "error": _err_text(exc)}
+
+
 _COMMANDS = {
     "status": _handle_status,
     "remember": _handle_remember,
@@ -872,6 +1117,12 @@ _COMMANDS = {
     "workflow": _handle_workflow,
     "docs": _handle_docs,
     "visualize": _handle_visualize,
+    "clarion": _handle_clarion,
+    "blueprint": _handle_blueprint,
+    "edict": _handle_edict,
+    "weave": _handle_weave,
+    "compass": _handle_compass,
+    "prism": _handle_prism,
 }
 
 

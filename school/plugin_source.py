@@ -328,9 +328,64 @@ const TOOL_CHOICE_GUARD: Record<string, { school: string; duel: string; proof: s
     proof: "9 actions vs 2, conflict/confidence/dedup/lifecycle, persistent",
   },
   superpowers: {
-    school: "school_workflow",
-    duel: "workflow vs superpowers",
-    proof: "7 fields vs 1, 7 actions vs 1, phase timing + run-history learning",
+    school: "school_blueprint",
+    duel: "forge suite vs superpowers",
+    proof: "interview->spec->plan->commands->acceptance in one chain, persisted + rendered",
+  },
+  brainstorm: {
+    school: "school_brainstorm",
+    duel: "brainstorm vs generic ideation",
+    proof: "10+ divergent techniques, impact/effort scoring, clustering, top-N selection",
+  },
+  "writing-plans": {
+    school: "school_weave",
+    duel: "weave vs writing-plans",
+    proof: "phases + lanes + dependencies + critical path + timeline visual, persisted",
+  },
+  writing_plans: {
+    school: "school_weave",
+    duel: "weave vs writing-plans",
+    proof: "phases + lanes + dependencies + critical path + timeline visual, persisted",
+  },
+  plan: {
+    school: "school_weave",
+    duel: "weave vs generic plans",
+    proof: "roadmap formation: phases, lanes, dependencies, critical path",
+  },
+  spec: {
+    school: "school_blueprint",
+    duel: "blueprint vs generic specs",
+    proof: "interview->spec: goal, scope, non-goals, risks, decomposition + Markdown",
+  },
+  specify: {
+    school: "school_blueprint",
+    duel: "blueprint vs specify",
+    proof: "adaptive interview over 12 dimensions beats a form-fill spec",
+  },
+  design: {
+    school: "school_blueprint",
+    duel: "blueprint vs generic design docs",
+    proof: "problem/proposed/non-goals/constraints/assumptions + traceability",
+  },
+  requirements: {
+    school: "school_clarion",
+    duel: "clarion vs static requirement docs",
+    proof: "adaptive interview, 4 modes, confidence tracking, open questions",
+  },
+  interview: {
+    school: "school_clarion",
+    duel: "clarion vs ad-hoc interviews",
+    proof: "12 universal dimensions, seeded questions, import/auto/batch modes",
+  },
+  acceptance: {
+    school: "school_compass",
+    duel: "compass vs ad-hoc acceptance",
+    proof: "Given/When/Then scenarios + checklist + success metrics from the interview",
+  },
+  checklist: {
+    school: "school_compass",
+    duel: "compass vs plain checklists",
+    proof: "scenarios + checks + metrics, derived and traceable to answers",
   },
   goal_set: {
     school: "school_goal",
@@ -354,6 +409,25 @@ function schoolToolFor(toolName: string): { school: string; area: string; proof:
   if (/explo|task|analy|survey|scout/.test(key))
     return { school: "school_explore", area: "exploration",
       proof: "conventions + patterns + extension stats" }
+  // Forge: idea->artifact (brainstorm/spec/planning competitors), universal.
+  if (/brainstorm|ideat|mindmap|ideas|idea[-_]?gen/.test(key))
+    return { school: "school_brainstorm", area: "brainstorm",
+      proof: "10+ divergent techniques, scored + clustered + selected" }
+  if (/interview|questionnaire|clarion|requirements?.*gathering/.test(key))
+    return { school: "school_clarion", area: "requirements",
+      proof: "adaptive interview over 12 universal dimensions, 4 modes" }
+  if (/blueprint|spec|design|requirement|prd|superpower/.test(key))
+    return { school: "school_blueprint", area: "specs",
+      proof: "goal + scope + non-goals + constraints + risks + decomposition" }
+  if (/writing[-_]?plan|roadmap|weave|formation|milestone|\bplans?\b/.test(key))
+    return { school: "school_weave", area: "roadmaps",
+      proof: "phases + lanes + dependencies + critical path + timeline" }
+  if (/edict|directive|commands/.test(key))
+    return { school: "school_edict", area: "commands",
+      proof: "ordered commands + always/never directives" }
+  if (/acceptance|checklist|criteria|gherkin|compass/.test(key))
+    return { school: "school_compass", area: "acceptance",
+      proof: "Given/When/Then scenarios + verification checklist + metrics" }
   if (/glob|grep|read|navig|file|list|map|find.*file/.test(key))
     return { school: "school_navigate", area: "navigation",
       proof: "4 unified actions, depth control, token-saving" }
@@ -366,7 +440,7 @@ function schoolToolFor(toolName: string): { school: string; area: string; proof:
   if (/memor|remember|recall|notion|forget/.test(key))
     return { school: "school_remember", area: "memory",
       proof: "9 actions vs 2, conflict + confidence + lifecycle" }
-  if (/workflow|superpower|process|sdd|phase|tdd|brainstorm/.test(key))
+  if (/workflow|process|sdd|phase|tdd/.test(key))
     return { school: "school_workflow", area: "workflow",
       proof: "7 fields vs 1, phase timing + run-history learning" }
   if (/session|convers|window/.test(key))
@@ -444,10 +518,14 @@ const VISUAL_DIRECTIVE = [
   "  - search/knowledge -> school_search / school_knowledge",
   "  - research/web     -> school_research (never bare websearch)",
   "  - docs/library     -> school_docs (never external doc fetchers)",
-  "  - codebase/explore -> school_explore / school_navigate (never bare glob)",
+  "  - project/explore  -> school_explore / school_navigate (never bare glob)",
   "  - run/execute/shell-> school_execute (never bare shell alone)",
   "  - goals/progress   -> school_goal / school_progress",
   "  - workflow/process -> school_workflow",
+  "  - ideas/brainstorm -> school_brainstorm (brainstorm: score + cluster + select)",
+  "  - specs/requirements-> school_blueprint / school_clarion (interview->spec)",
+  "  - plans/roadmaps   -> school_weave / school_edict (formation + commands)",
+  "  - acceptance/checks-> school_compass (scenarios + checklist + metrics)",
   "  - sessions         -> school_session",
   "  - observe/learn    -> school_observe / school_learn",
   "  - status/health    -> school_status / school_dashboard / school_diagnose",
@@ -2626,9 +2704,10 @@ const School: Plugin = async (ctx) => {
       school_skill_search_github: tool({
         description:
           "Use school_skill_search_github to run bounded GitHub repository " +
-          "searches for a capability gap and return candidate skill sources. " +
-          "Read-only; network required. Use only when local skills are " +
-          "insufficient.",
+          "searches for a capability gap and return candidate skill sources " +
+          "for any kind of work — software, writing, research, business, " +
+          "planning, creative, life. Read-only; network required. Use only " +
+          "when local skills are insufficient.",
         args: {
           task: tool.schema
             .string()
@@ -2649,7 +2728,10 @@ const School: Plugin = async (ctx) => {
         },
         async execute(args, context) {
           if (!bridge) {
-            return { title: "School Skill Search Github", output: withVis("School: unavailable.", null) }
+            return {
+              title: "School Skill Search Github",
+              output: withVis("School: unavailable.", null),
+            }
           }
           const resp = await invokeBridge(python, bridgePath, {
             command: "skill_search_github",
@@ -2683,7 +2765,7 @@ const School: Plugin = async (ctx) => {
           "Use school_skill_discover to scan GitHub search results for " +
           "skill-like files with deterministic filtering and security " +
           "classification. Returns candidates for analysis; never downloads " +
-          "repositories or executes code.",
+          "or runs anything.",
         args: {
           task: tool.schema
             .string()
@@ -2753,7 +2835,10 @@ const School: Plugin = async (ctx) => {
         },
         async execute(args, context) {
           if (!bridge) {
-            return { title: "School Skill Analyze External", output: withVis("School: unavailable.", null) }
+            return {
+              title: "School Skill Analyze External",
+              output: withVis("School: unavailable.", null),
+            }
           }
           const resp = await invokeBridge(python, bridgePath, {
             command: "skill_analyze_external",
@@ -3138,8 +3223,9 @@ const School: Plugin = async (ctx) => {
 
       school_explore: tool({
         description:
-          "Use school_explore to explore a codebase path and extract structure, " +
-          "patterns, and conventions. Returns a structural summary.",
+          "Use school_explore to explore a project or workspace and extract " +
+          "structure, patterns, and conventions for any kind of work — software, " +
+          "writing, research, business, creative, life. Returns a structural summary.",
         args: {
           target: tool.schema.string().describe("Relative or absolute path to explore."),
           depth: tool.schema
@@ -3286,8 +3372,8 @@ const School: Plugin = async (ctx) => {
 
       school_navigate: tool({
         description:
-          "Use school_navigate to read, list, search, or map project files. " +
-          "Actions: read | list | search | map. " +
+          "Use school_navigate to read, list, search, or map files in any project " +
+          "or workspace. Actions: read | list | search | map. " +
           "SCHOOL_NAVIGATE=0 disables it.",
         args: {
           action: tool.schema.string().describe("read | list | search | map"),
@@ -3317,9 +3403,10 @@ const School: Plugin = async (ctx) => {
 
       school_workflow: tool({
         description:
-          "Use school_workflow to run SDD workflows (tdd, debug, brainstorm, review). " +
-          "Actions: start | advance | status | abort | list | define | block. " +
-          "Persists state and learns from run history. " +
+          "Use school_workflow to run structured workflows (tdd, debug, brainstorm, " +
+          "review) for ANY kind of work — software, writing, research, business, " +
+          "planning, creative, life. Actions: start | advance | status | abort | " +
+          "list | define | block. Persists state and learns from run history. " +
           "SCHOOL_WORKFLOW=0 disables it.",
         args: {
           name: tool.schema
@@ -3357,9 +3444,9 @@ const School: Plugin = async (ctx) => {
 
       school_docs: tool({
         description:
-          "Use school_docs to fetch library/framework docs with local caching. " +
-          "Returns skeletonized content for token efficiency. " +
-          "Supports version pinning via library + version. " +
+          "Use school_docs to fetch reference docs with local caching for any " +
+          "library, framework, product, or topic. Returns skeletonized content for " +
+          "token efficiency. Supports version pinning via library + version. " +
           "SCHOOL_DOCS=0 disables it.",
         args: {
           query: tool.schema.string().describe("Documentation query."),
@@ -3399,7 +3486,7 @@ const School: Plugin = async (ctx) => {
           "delta, kanban, kpi, pie, scatter, funnel, calendar heatmap, word cloud, " +
           "mini ring + 30 coding + 40 general. Pure Unicode, works in CLI, OpenCode, " +
           "and every agent type (coding, chat, assistant). NEVER output plain text when " +
-          "a visual can show it — call school_visualize for results, progress, metrics, " +
+          "a visual can show it — Use school_visualize for results, progress, metrics, " +
           "comparisons, timelines, and any structured data.",
         args: {
           type: tool.schema.string().describe("Visual type: see school visualize docs"),
@@ -3422,6 +3509,305 @@ const School: Plugin = async (ctx) => {
           return {
             title: `School Visual: ${args.type}`,
             output: withVis(resp.output || "", resp),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_clarion: tool({
+        description:
+          "Use school_clarion to capture requirements for ANY kind of work — " +
+          "software, writing, research, business, planning, creative, life. " +
+          "Adaptive discovery interview. Actions: start | next | answer | auto | " +
+          "import | batch | summary. Pass the interview dict back to keep state. " +
+          "For the full planning workflow, load the `chart` skill.",
+        args: {
+          action: tool.schema
+            .string()
+            .describe("start | next | answer | auto | import | batch | summary"),
+          title: tool.schema.string().optional().describe("Idea or goal title (start)."),
+          domain: tool.schema
+            .string()
+            .optional()
+            .describe(
+              "coding | writing | research | business | planning | education | " +
+              "creative | ops | data | life | general",
+            ),
+          mode: tool.schema
+            .string()
+            .optional()
+            .describe("interview | batch | auto | import (start)."),
+          seed_questions: tool.schema
+            .any()
+            .optional()
+            .describe("Optional seed questions (start)."),
+          existing_doc: tool.schema
+            .string()
+            .optional()
+            .describe("Existing doc text to seed from (start)."),
+          interview: tool.schema
+            .any()
+            .optional()
+            .describe("Interview state dict from a previous call."),
+          question_id: tool.schema.string().optional().describe("Question id (answer)."),
+          value: tool.schema.any().optional().describe("Answer value (answer)."),
+          is_custom: tool.schema
+            .boolean()
+            .optional()
+            .describe("True for a custom free-text answer."),
+          confidence: tool.schema.number().optional().describe("Answer confidence 0..1."),
+          doc_text: tool.schema
+            .string()
+            .optional()
+            .describe("Document text to import answers from (import)."),
+          answers: tool.schema.any().optional().describe("Batch answers (batch)."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Clarion", output: withVis("School: unavailable.", null) }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "clarion",
+            worktree: context.worktree,
+            action: args.action,
+            title: args.title,
+            domain: args.domain,
+            mode: args.mode,
+            seed_questions: args.seed_questions,
+            existing_doc: args.existing_doc,
+            interview: args.interview,
+            question_id: args.question_id,
+            value: args.value,
+            is_custom: args.is_custom,
+            confidence: args.confidence,
+            doc_text: args.doc_text,
+            answers: args.answers,
+          })
+          if (!resp.ok) {
+            const msg =
+              typeof resp.error === "string" ? resp.error : JSON.stringify(resp.error ?? resp)
+            return { title: "School Clarion", output: withVis(`Error: ${msg}`, resp) }
+          }
+          return {
+            title: "School Clarion",
+            output: withVis(JSON.stringify(resp, null, 2), resp),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_blueprint: tool({
+        description:
+          "Use school_blueprint to turn a discovery interview into a design spec " +
+          "for ANY kind of work — software, writing, research, business, planning, " +
+          "creative, life. Returns goal, scope, non-goals, constraints, risks, " +
+          "decomposition + rendered Markdown. For the full planning workflow, " +
+          "load the `chart` skill.",
+        args: {
+          interview: tool.schema
+            .any()
+            .describe("Interview state dict (round-trip from school_clarion)."),
+          title: tool.schema.string().optional().describe("Optional title override."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Blueprint", output: withVis("School: unavailable.", null) }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "blueprint",
+            worktree: context.worktree,
+            interview: args.interview,
+            title: args.title,
+          })
+          if (!resp.ok) {
+            const msg =
+              typeof resp.error === "string" ? resp.error : JSON.stringify(resp.error ?? resp)
+            return { title: "School Blueprint", output: withVis(`Error: ${msg}`, resp) }
+          }
+          return {
+            title: "School Blueprint",
+            output: withVis(resp.markdown || JSON.stringify(resp, null, 2), resp),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_edict: tool({
+        description:
+          "Use school_edict to turn a discovery interview into ordered commands + " +
+          "always/never directives for ANY kind of work — software, writing, " +
+          "research, business, planning, creative, life. Returns executable steps " +
+          "with phases, estimates + rendered Markdown. For checks-first execution " +
+          "of these commands, load the `forge` skill.",
+        args: {
+          interview: tool.schema
+            .any()
+            .describe("Interview state dict (round-trip from school_clarion)."),
+          blueprint: tool.schema.any().optional().describe("Optional blueprint dict."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Edict", output: withVis("School: unavailable.", null) }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "edict",
+            worktree: context.worktree,
+            interview: args.interview,
+            blueprint: args.blueprint,
+          })
+          if (!resp.ok) {
+            const msg =
+              typeof resp.error === "string" ? resp.error : JSON.stringify(resp.error ?? resp)
+            return { title: "School Edict", output: withVis(`Error: ${msg}`, resp) }
+          }
+          return {
+            title: "School Edict",
+            output: withVis(resp.markdown || JSON.stringify(resp, null, 2), resp),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_weave: tool({
+        description:
+          "Use school_weave to shape commands into a roadmap formation (phases, " +
+          "lanes, dependencies, critical path) for ANY kind of work — software, " +
+          "writing, research, business, planning, creative, life. Returns the " +
+          "formation + timeline visual + rendered Markdown. For parallel lane " +
+          "execution and ordered merges, load the `relay` skill.",
+        args: {
+          interview: tool.schema
+            .any()
+            .describe("Interview state dict (round-trip from school_clarion)."),
+          commands: tool.schema
+            .any()
+            .optional()
+            .describe("Optional commands list (from school_edict)."),
+          blueprint: tool.schema.any().optional().describe("Optional blueprint dict."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Weave", output: withVis("School: unavailable.", null) }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "weave",
+            worktree: context.worktree,
+            interview: args.interview,
+            commands: args.commands,
+            blueprint: args.blueprint,
+          })
+          if (!resp.ok) {
+            const msg =
+              typeof resp.error === "string" ? resp.error : JSON.stringify(resp.error ?? resp)
+            return { title: "School Weave", output: withVis(`Error: ${msg}`, resp) }
+          }
+          return {
+            title: "School Weave",
+            output: withVis(resp.markdown || JSON.stringify(resp, null, 2), resp),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_compass: tool({
+        description:
+          "Use school_compass to derive acceptance criteria from an interview for " +
+          "ANY kind of work — software, writing, research, business, planning, " +
+          "creative, life. Returns Given/When/Then scenarios, a verification " +
+          "checklist, success metrics + rendered Markdown. For the pass/fail " +
+          "verdict on these criteria, load the `gate` skill.",
+        args: {
+          interview: tool.schema
+            .any()
+            .describe("Interview state dict (round-trip from school_clarion)."),
+          blueprint: tool.schema.any().optional().describe("Optional blueprint dict."),
+          commands: tool.schema
+            .any()
+            .optional()
+            .describe("Optional commands list (from school_edict)."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Compass", output: withVis("School: unavailable.", null) }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "compass",
+            worktree: context.worktree,
+            interview: args.interview,
+            blueprint: args.blueprint,
+            commands: args.commands,
+          })
+          if (!resp.ok) {
+            const msg =
+              typeof resp.error === "string" ? resp.error : JSON.stringify(resp.error ?? resp)
+            return { title: "School Compass", output: withVis(`Error: ${msg}`, resp) }
+          }
+          return {
+            title: "School Compass",
+            output: withVis(resp.markdown || JSON.stringify(resp, null, 2), resp),
+            metadata: resp,
+          }
+        },
+      }),
+
+      school_brainstorm: tool({
+        description:
+          "Use school_brainstorm to diverge then converge on ideas for ANY kind of " +
+          "work — software, writing, research, business, planning, creative, life. " +
+          "Actions: brainstorm | score | select | cluster | summary. Returns scored " +
+          "ideas + clusters; pass the session dict back to keep state. To plan the " +
+          "selected ideas into steps, load the `chart` skill.",
+        args: {
+          action: tool.schema
+            .string()
+            .optional()
+            .describe("brainstorm | score | select | cluster | summary"),
+          topic: tool.schema.string().optional().describe("Topic to brainstorm (brainstorm)."),
+          domain: tool.schema
+            .string()
+            .optional()
+            .describe(
+              "coding | writing | research | business | planning | education | " +
+              "creative | ops | data | life | general",
+            ),
+          techniques: tool.schema
+            .any()
+            .optional()
+            .describe("Optional technique list (brainstorm)."),
+          count: tool.schema.number().optional().describe("How many ideas (brainstorm)."),
+          seed: tool.schema.number().optional().describe("Deterministic seed (brainstorm)."),
+          session: tool.schema
+            .any()
+            .optional()
+            .describe("Brainstorm session dict from a previous call."),
+          weights: tool.schema.any().optional().describe("Scoring weights (score)."),
+          n: tool.schema.number().optional().describe("How many ideas to select (select)."),
+        },
+        async execute(args, context) {
+          if (!bridge) {
+            return { title: "School Brainstorm", output: withVis("School: unavailable.", null) }
+          }
+          const resp = await invokeBridge(python, bridgePath, {
+            command: "prism",
+            worktree: context.worktree,
+            action: args.action,
+            topic: args.topic,
+            domain: args.domain,
+            techniques: args.techniques,
+            count: args.count,
+            seed: args.seed,
+            session: args.session,
+            weights: args.weights,
+            n: args.n,
+          })
+          if (!resp.ok) {
+            const msg =
+              typeof resp.error === "string" ? resp.error : JSON.stringify(resp.error ?? resp)
+            return { title: "School Brainstorm", output: withVis(`Error: ${msg}`, resp) }
+          }
+          return {
+            title: "School Brainstorm",
+            output: withVis(JSON.stringify(resp, null, 2), resp),
             metadata: resp,
           }
         },

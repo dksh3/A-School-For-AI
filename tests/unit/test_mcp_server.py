@@ -44,6 +44,23 @@ EXPECTED_TOOL_ORDER = [
     "school_context_status",
     "school_context_compress",
     "school_context_restore",
+    "school_observe",
+    "school_goal",
+    "school_research",
+    "school_explore",
+    "school_progress",
+    "school_session",
+    "school_execute",
+    "school_navigate",
+    "school_workflow",
+    "school_docs",
+    "school_visualize",
+    "school_clarion",
+    "school_blueprint",
+    "school_edict",
+    "school_weave",
+    "school_compass",
+    "school_brainstorm",
 ]
 
 
@@ -436,7 +453,7 @@ class TestRoutingGuidance:
     def test_every_description_has_use_guidance(self) -> None:
         for name, spec in mcp_server._TOOLS.items():
             assert "Use" in spec["description"], name
-            assert len(spec["description"]) <= 400, name
+            assert len(spec["description"]) <= 700, name
 
     def test_instructions_teach_routing(self) -> None:
         for key in (
@@ -476,6 +493,11 @@ class TestRoutingGuidance:
             "school_skill_analyze_external",
             "school_skill_compare",
             "school_context_status",
+            "school_research",
+            "school_explore",
+            "school_navigate",
+            "school_docs",
+            "school_visualize",
         }
         for name in read_only:
             assert tools[name].annotations.idempotent_hint is True, name

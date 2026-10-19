@@ -55,6 +55,23 @@ EXPECTED_TOOLS = [
     "school_context_status",
     "school_context_compress",
     "school_context_restore",
+    "school_observe",
+    "school_goal",
+    "school_research",
+    "school_explore",
+    "school_progress",
+    "school_session",
+    "school_execute",
+    "school_navigate",
+    "school_workflow",
+    "school_docs",
+    "school_visualize",
+    "school_clarion",
+    "school_blueprint",
+    "school_edict",
+    "school_weave",
+    "school_compass",
+    "school_brainstorm",
 ]
 
 

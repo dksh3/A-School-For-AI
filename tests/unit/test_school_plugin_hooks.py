@@ -44,7 +44,7 @@ class TestExecutionHooksRegistered:
     def test_tool_surface_unchanged(self) -> None:
         """The tool surface: 26 approved tools + three S2 context mirrors."""
         names = re.findall(r"^\s+(school_\w+): tool\(", TS_PLUGIN_SOURCE, re.MULTILINE)
-        assert len(names) == 40, f"tool surface changed: {names}"
+        assert len(names) == 46, f"tool surface changed: {names}"
 
 
 class TestStatusFooterAndDashboard:
